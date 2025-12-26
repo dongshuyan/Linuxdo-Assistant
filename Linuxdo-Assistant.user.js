@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.6.0
+// @version      1.6.1
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -49,7 +49,8 @@
             CACHE_TRUST: 'lda_v4_cache_trust',
             TAB_ORDER: 'lda_v5_tab_order',
             CACHE_CDK: 'lda_v5_cache_cdk',
-            REFRESH_INTERVAL: 'lda_v5_refresh_interval'
+            REFRESH_INTERVAL: 'lda_v5_refresh_interval',
+            OPACITY: 'lda_v5_opacity'
         }
     };
     const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
@@ -79,6 +80,7 @@
             set_auto: "自动展开面板",
             set_lang: "界面语言",
             set_size: "面板高度",
+            set_opacity: "透明度",
             set_refresh: "自动刷新频率",
             size_sm: "标准",
             size_lg: "加高",
@@ -140,6 +142,7 @@
             set_auto: "Auto Expand",
             set_lang: "Language",
             set_size: "Panel Height",
+            set_opacity: "Opacity",
             set_refresh: "Auto Refresh",
             size_sm: "Small",
             size_lg: "Tall",
@@ -305,6 +308,9 @@
             --lda-ball-ring: rgba(0,0,0,0.08);
             --lda-rad: 12px;
             --lda-z: 99999;
+            --lda-opacity: 1;
+            --lda-ball-size: 40px;
+            --lda-ball-radius: 14px;
             --lda-red: #ef4444;
             --lda-green: #22c55e;
             --lda-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
@@ -319,24 +325,37 @@
             --lda-ball-ring: rgba(255,255,255,0.15);
         }
 
-        #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); min-width: 44px; min-height: 44px; }
+        #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); min-width: var(--lda-ball-size); min-height: var(--lda-ball-size); opacity: var(--lda-opacity); transition: opacity 0.2s ease; }
         
         /* 悬浮球 */
         .lda-ball {
-            width: 44px; height: 44px; background: var(--lda-accent); border-radius: 50%;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4), 0 0 0 2px var(--lda-ball-ring);
-            border: 2px solid var(--lda-ball-ring);
+            position: relative;
+            width: var(--lda-ball-size); height: var(--lda-ball-size);
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            border-radius: var(--lda-ball-radius);
+            box-shadow: 0 8px 22px rgba(59, 130, 246, 0.35), 0 0 0 1px var(--lda-ball-ring);
+            border: none;
             cursor: grab;
             display: flex; align-items: center; justify-content: center; color: #fff;
             transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
+            overflow: hidden;
         }
-        .lda-ball:hover { transform: scale(1.1) rotate(10deg); box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6); }
-        .lda-ball.dragging { cursor: grabbing; transform: scale(1.15); box-shadow: 0 8px 25px rgba(59, 130, 246, 0.7); }
-        .lda-ball svg { width: 24px; height: 24px; fill: currentColor; pointer-events: none; }
+        .lda-ball::after {
+            content: "";
+            position: absolute;
+            inset: 2px;
+            border-radius: inherit;
+            background: radial-gradient(circle at 30% 30%, rgba(255,255,255,0.25), transparent 55%);
+            pointer-events: none;
+            opacity: 0.9;
+        }
+        .lda-ball:hover { transform: scale(1.08) rotate(6deg); box-shadow: 0 10px 26px rgba(59, 130, 246, 0.45); }
+        .lda-ball.dragging { cursor: grabbing; transform: scale(1.12); box-shadow: 0 12px 28px rgba(59, 130, 246, 0.55); }
+        .lda-ball svg { width: 20px; height: 20px; fill: currentColor; pointer-events: none; position: relative; z-index: 1; }
 
         /* 面板 */
         .lda-panel {
-            position: absolute; top: 58px; right: 0;
+            position: absolute; top: 0; right: 0;
             width: 340px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: var(--lda-border); border-radius: var(--lda-rad); box-shadow: var(--lda-shadow);
             display: none; flex-direction: column; overflow: hidden; margin-top: 0;
@@ -474,6 +493,8 @@
         .lda-opt { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 14px; border-bottom: var(--lda-border); }
         .lda-opt:last-child { border: none; margin: 0; padding: 0; }
         .lda-opt-label { font-size: 13px; font-weight: 500; }
+        .lda-opt-right { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+        .lda-opt-sub { font-size: 12px; color: var(--lda-dim); }
         
         .lda-switch { position: relative; width: 36px; height: 20px; display: inline-block; }
         .lda-switch input { opacity: 0; width: 0; height: 0; }
@@ -485,6 +506,36 @@
         .lda-seg { display: flex; background: rgba(125,125,125,0.08); padding: 3px; border-radius: 8px; }
         .lda-seg-item { padding: 4px 10px; font-size: 11px; cursor: pointer; border-radius: 6px; color: var(--lda-dim); font-weight: 500; transition: 0.2s; }
         .lda-seg-item.active { background: var(--lda-bg); color: var(--lda-fg); box-shadow: 0 2px 5px rgba(0,0,0,0.05); font-weight: 600; }
+
+        .lda-opacity-row { display: flex; align-items: center; gap: 8px; }
+        .lda-range {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 140px;
+            height: 6px;
+            border-radius: 999px;
+            background: linear-gradient(90deg, rgba(59,130,246,0.15), rgba(59,130,246,0.35));
+            outline: none;
+            cursor: pointer;
+        }
+        .lda-range::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--lda-accent);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            border: 1px solid rgba(255,255,255,0.6);
+        }
+        .lda-range::-moz-range-thumb {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--lda-accent);
+            box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+            border: 1px solid rgba(255,255,255,0.6);
+        }
 
         .lda-spin { animation: lda-spin 0.8s linear infinite; }
         @keyframes lda-spin { 100% { transform: rotate(360deg); } }
@@ -521,7 +572,8 @@
                 expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
                 tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']), // 标签顺序
-                refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 30) // 分钟，0 为关闭
+                refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 30), // 分钟，0 为关闭
+                opacity: Utils.get(CONFIG.KEYS.OPACITY, 1)
             };
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
             this.focusFlags = { trust: false, credit: false, cdk: false };
@@ -543,6 +595,7 @@
             this.bindGlobalEvents();
             this.applyTheme();
             this.applyHeight();
+            this.applyOpacity();
             this.restorePos();
             this.updatePanelSide();
             this.startAutoRefreshTimer();
@@ -612,8 +665,10 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
+            const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
+            const opacityPercent = Math.round(opacityVal * 100);
             
             // 标签名称映射
             const tabNames = {
@@ -648,10 +703,17 @@
                     </div>
                     <div class="lda-opt">
                         <div class="lda-opt-label">${this.t('set_size')}</div>
-                        <div class="lda-seg" id="grp-size">
-                            <div class="lda-seg-item ${r('sm', height)}" data-v="sm">${this.t('size_sm')}</div>
-                            <div class="lda-seg-item ${r('lg', height)}" data-v="lg">${this.t('size_lg')}</div>
-                            <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
+                        <div class="lda-opt-right">
+                            <div class="lda-seg" id="grp-size">
+                                <div class="lda-seg-item ${r('sm', height)}" data-v="sm">${this.t('size_sm')}</div>
+                                <div class="lda-seg-item ${r('lg', height)}" data-v="lg">${this.t('size_lg')}</div>
+                                <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
+                            </div>
+                            <div class="lda-opacity-row">
+                                <span class="lda-opt-sub">${this.t('set_opacity')}</span>
+                                <input type="range" min="0.5" max="1" step="0.05" value="${opacityVal}" id="inp-opacity" class="lda-range">
+                                <span id="val-opacity">${opacityPercent}%</span>
+                            </div>
                         </div>
                     </div>
                     <div class="lda-opt">
@@ -831,6 +893,18 @@
                 }
                 if (wasOpen) this.togglePanel(true);
             };
+
+            this.dom.setting.addEventListener('input', (e) => {
+                if (e.target.id === 'inp-opacity') {
+                    e.stopPropagation();
+                    const val = Math.max(0.5, Math.min(1, Number(e.target.value) || 1));
+                    this.state.opacity = val;
+                    Utils.set(CONFIG.KEYS.OPACITY, val);
+                    this.applyOpacity();
+                    const display = Utils.el('#val-opacity', this.dom.setting);
+                    if (display) display.textContent = `${Math.round(val * 100)}%`;
+                }
+            });
 
             this.dom.themeBtn.onclick = (e) => {
                 e.stopPropagation();
@@ -1298,7 +1372,7 @@
 
         updatePanelSide() {
             const rect = this.dom.root.getBoundingClientRect();
-            const rootWidth = rect.width || 44;
+            const rootWidth = rect.width || (this.dom.ball?.getBoundingClientRect().width) || 40;
             const panelWidth = this.dom.panel.getBoundingClientRect().width || 340;
             const spaceLeft = rect.left;
             const spaceRight = window.innerWidth - rect.right;
@@ -1336,6 +1410,12 @@
 
         applyHeight() {
             this.dom.panel.className = `lda-panel h-${this.state.height}`;
+        }
+
+        applyOpacity() {
+            const val = Math.max(0.5, Math.min(1, Number(this.state.opacity) || 1));
+            this.state.opacity = val;
+            if (this.dom.root) this.dom.root.style.setProperty('--lda-opacity', val);
         }
 
         initDrag() {
