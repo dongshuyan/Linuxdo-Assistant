@@ -1,0 +1,642 @@
+// ==UserScript==
+// @name         Linux.do Assistant
+// @namespace    https://linux.do/
+// @version      1.0.0
+// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看
+// @author       Sauterne@Linux.do
+// @match        https://linux.do/*
+// @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_addStyle
+// @connect      connect.linux.do
+// @connect      credit.linux.do
+// @run-at       document-idle
+// @license      MIT
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // 配置
+    const CONFIG = {
+        API: {
+            TRUST: 'https://connect.linux.do',
+            CREDIT_INFO: 'https://credit.linux.do/api/v1/oauth/user-info',
+            CREDIT_STATS: 'https://credit.linux.do/api/v1/dashboard/stats/daily?days=7',
+            LINK_TRUST: 'https://connect.linux.do/',
+            LINK_CREDIT: 'https://credit.linux.do/home'
+        },
+        // 保持 v4 键名以维持配置
+        KEYS: {
+            POS: 'lda_v4_pos',
+            THEME: 'lda_v4_theme',
+            EXPAND: 'lda_v4_expand',
+            HEIGHT: 'lda_v4_height',
+            LANG: 'lda_v4_lang',
+            CACHE_TRUST: 'lda_v4_cache_trust' 
+        }
+    };
+
+    // 多语言
+    const I18N = {
+        zh: {
+            title: "Linux.do 仪表盘",
+            tab_trust: "信任级别",
+            tab_credit: "积分详情",
+            tab_setting: "偏好设置",
+            loading: "数据加载中...",
+            connect_err: "连接失败或未登录",
+            level: "当前级别",
+            status_ok: "已达标",
+            status_fail: "未达标",
+            balance: "当前余额",
+            daily_limit: "今日剩余额度",
+            recent: "近7日收支",
+            no_rec: "暂无记录",
+            income: "收入",
+            expense: "支出",
+            set_auto: "自动展开面板",
+            set_lang: "界面语言",
+            set_size: "面板高度",
+            size_sm: "标准",
+            size_lg: "加高",
+            size_auto: "自适应",
+            theme_tip: "点击切换：亮色 / 深色 / 跟随系统",
+            link_tip: "前往网页版",
+            refresh_tip: "刷新数据"
+        },
+        en: {
+            title: "Linux.do HUD",
+            tab_trust: "Trust Level",
+            tab_credit: "Credits",
+            tab_setting: "Settings",
+            loading: "Loading...",
+            connect_err: "Connection Error / Not Logged In",
+            level: "Level",
+            status_ok: "Qualified",
+            status_fail: "Unqualified",
+            balance: "Balance",
+            daily_limit: "Daily Limit",
+            recent: "Recent Activity",
+            no_rec: "No activity",
+            income: "Income",
+            expense: "Expense",
+            set_auto: "Auto Expand",
+            set_lang: "Language",
+            set_size: "Panel Height",
+            size_sm: "Small",
+            size_lg: "Tall",
+            size_auto: "Auto",
+            theme_tip: "Toggle: Light / Dark / Auto",
+            link_tip: "Open Website",
+            refresh_tip: "Refresh"
+        }
+    };
+
+    // 工具函数
+    class Utils {
+        static async request(url, options = {}) {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET', url,
+                    headers: { 'Cache-Control': 'no-cache' },
+                    ...options,
+                    onload: r => (r.status >= 200 && r.status < 300) ? resolve(r.responseText) : reject(r),
+                    onerror: e => reject(e)
+                });
+            });
+        }
+        static get(k, d) { return GM_getValue(k, d); }
+        static set(k, v) { GM_setValue(k, v); }
+        static html(strings, ...values) { return strings.reduce((r, s, i) => r + s + (values[i] || ''), ''); }
+        static el(s, p = document) { return p.querySelector(s); }
+        static els(s, p = document) { return p.querySelectorAll(s); }
+    }
+
+    // 样式
+    const Styles = `
+        :root {
+            --lda-bg: rgba(255, 255, 255, 0.94);
+            --lda-fg: #0f172a;
+            --lda-dim: #64748b;
+            --lda-border: 1px solid rgba(0,0,0,0.08);
+            --lda-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.12);
+            --lda-accent: #3b82f6;
+            --lda-rad: 12px;
+            --lda-z: 99999;
+            --lda-red: #ef4444;
+            --lda-green: #22c55e;
+            --lda-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+        .lda-dark {
+            --lda-bg: rgba(15, 23, 42, 0.94);
+            --lda-fg: #f1f5f9;
+            --lda-dim: #94a3b8;
+            --lda-border: 1px solid rgba(255,255,255,0.08);
+            --lda-shadow: 0 12px 30px -4px rgba(0, 0, 0, 0.6);
+            --lda-accent: #38bdf8;
+        }
+
+        #lda-root { position: fixed; z-index: var(--lda-z); font-family: var(--lda-font); font-size: 14px; user-select: none; color: var(--lda-fg); }
+        
+        /* 悬浮球 */
+        .lda-ball {
+            width: 44px; height: 44px; background: var(--lda-accent); border-radius: 50%;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); cursor: pointer;
+            display: flex; align-items: center; justify-content: center; color: #fff;
+            transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .lda-ball:hover { transform: scale(1.1) rotate(10deg); }
+        .lda-ball svg { width: 24px; height: 24px; fill: currentColor; }
+
+        /* 面板 */
+        .lda-panel {
+            width: 320px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            border: var(--lda-border); border-radius: var(--lda-rad); box-shadow: var(--lda-shadow);
+            display: none; flex-direction: column; overflow: hidden; margin-top: 14px;
+            transform-origin: top right; animation: lda-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+        }
+        @keyframes lda-in { from { opacity: 0; transform: scale(0.92) translateY(-10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+
+        /* 头部 */
+        .lda-head {
+            padding: 12px 16px; display: flex; justify-content: space-between; align-items: center;
+            border-bottom: var(--lda-border); background: rgba(125,125,125,0.03); cursor: move;
+        }
+        .lda-title { font-weight: 700; font-size: 13px; color: var(--lda-accent); letter-spacing: -0.3px; }
+        .lda-actions { display: flex; gap: 8px; }
+        .lda-icon-btn {
+            width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; opacity: 0.6; transition: 0.2s; color: var(--lda-fg);
+        }
+        .lda-icon-btn:hover { background: rgba(125,125,125,0.1); opacity: 1; }
+
+        /* 导航 */
+        .lda-tabs { display: flex; padding: 6px 16px 0; border-bottom: var(--lda-border); gap: 16px; }
+        .lda-tab {
+            padding: 8px 0; font-size: 12px; cursor: pointer; color: var(--lda-dim); 
+            border-bottom: 2px solid transparent; transition: 0.2s; font-weight: 500;
+        }
+        .lda-tab:hover { color: var(--lda-fg); }
+        .lda-tab.active { border-bottom-color: var(--lda-accent); color: var(--lda-accent); font-weight: 600; }
+
+        /* 内容区 */
+        .lda-body { position: relative; transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .lda-page { display: none; padding: 16px; animation: lda-fade 0.2s; }
+        .lda-page.active { display: block; }
+        @keyframes lda-fade { from { opacity: 0; transform: translateX(6px); } to { opacity: 1; transform: translateX(0); } }
+
+        /* 高度控制 */
+        .h-sm .lda-body { height: 320px; overflow-y: auto; }
+        .h-lg .lda-body { height: 520px; overflow-y: auto; }
+        .h-auto .lda-body { height: auto; max-height: 80vh; min-height: 200px; overflow-y: auto; }
+        .lda-body::-webkit-scrollbar { width: 4px; }
+        .lda-body::-webkit-scrollbar-thumb { background: rgba(125,125,125,0.2); border-radius: 2px; }
+
+        /* 卡片通用 */
+        .lda-card {
+            background: rgba(125,125,125,0.03); border-radius: 10px; padding: 14px; margin-bottom: 12px;
+            border: var(--lda-border); position: relative;
+        }
+        
+        /* 头部信息栏 & 动作按钮组 */
+        .lda-info-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; min-height: 28px; }
+        .lda-lvl-group { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding-right: 60px; /* 留出右侧按钮空间 */ }
+        .lda-big-lvl { font-size: 20px; font-weight: 800; color: var(--lda-accent); line-height: 1; }
+        .lda-badge { 
+            padding: 3px 8px; border-radius: 6px; font-size: 11px; font-weight: 600;
+            background: rgba(125,125,125,0.1); display: inline-block;
+        }
+        .lda-badge.ok { background: rgba(34, 197, 94, 0.1); color: var(--lda-green); }
+        .lda-badge.no { background: rgba(239, 68, 68, 0.1); color: var(--lda-red); }
+
+        /* 动作组容器 */
+        .lda-actions-group {
+            position: absolute; top: 12px; right: 12px;
+            display: flex; gap: 6px;
+        }
+
+        /* 统一的动作按钮样式 */
+        .lda-act-btn {
+            width: 28px; height: 28px; border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            cursor: pointer; background: var(--lda-bg); box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+            color: var(--lda-dim); transition: 0.2s; border: var(--lda-border);
+            text-decoration: none; /* 针对 a 标签 */
+        }
+        .lda-act-btn:hover { color: var(--lda-accent); background: #fff; }
+        .lda-dark .lda-act-btn:hover { background: rgba(255,255,255,0.1); }
+        
+        /* 刷新按钮旋转逻辑 */
+        .lda-act-btn.loading svg { animation: lda-spin 0.8s linear infinite; }
+
+        /* 信任列表条目 */
+        .lda-item { margin-bottom: 10px; }
+        .lda-item-top { display: flex; justify-content: space-between; font-size: 12px; margin-bottom: 4px; }
+        .lda-i-name { color: var(--lda-dim); }
+        .lda-i-val { font-family: 'SF Mono', monospace; font-weight: 600; display: flex; align-items: center; }
+        .lda-progress { height: 5px; background: rgba(125,125,125,0.1); border-radius: 3px; overflow: hidden; }
+        .lda-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease-out; }
+        
+        /* 涨跌 Diff */
+        .lda-diff { 
+            font-size: 10px; padding: 1px 4px; border-radius: 4px; font-weight: 700; margin-left: 6px; 
+            display: inline-flex; align-items: center; height: 16px;
+        }
+        .lda-diff.up { color: var(--lda-red); background: rgba(239, 68, 68, 0.1); }
+        .lda-diff.down { color: var(--lda-green); background: rgba(34, 197, 94, 0.1); }
+
+        /* 积分 */
+        .lda-credit-hero { text-align: center; padding: 20px 0; }
+        .lda-credit-num { font-size: 28px; font-weight: 700; color: var(--lda-fg); font-family: monospace; letter-spacing: -1px; }
+        .lda-credit-label { font-size: 11px; text-transform: uppercase; color: var(--lda-dim); margin-top: 4px; letter-spacing: 1px; }
+        
+        .lda-row-rec { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed rgba(125,125,125,0.2); font-size: 12px; }
+        .lda-row-rec:last-child { border: none; }
+        .lda-amt { font-weight: 600; font-family: monospace; }
+
+        /* 设置 */
+        .lda-opt { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; padding-bottom: 14px; border-bottom: var(--lda-border); }
+        .lda-opt:last-child { border: none; margin: 0; padding: 0; }
+        .lda-opt-label { font-size: 13px; font-weight: 500; }
+        
+        .lda-switch { position: relative; width: 36px; height: 20px; display: inline-block; }
+        .lda-switch input { opacity: 0; width: 0; height: 0; }
+        .lda-slider { position: absolute; cursor: pointer; top: 0; left: 0; right: 0; bottom: 0; background-color: #cbd5e1; transition: .3s; border-radius: 20px; }
+        .lda-slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 2px; bottom: 2px; background-color: white; transition: .3s; border-radius: 50%; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+        input:checked + .lda-slider { background-color: var(--lda-accent); }
+        input:checked + .lda-slider:before { transform: translateX(16px); }
+
+        .lda-seg { display: flex; background: rgba(125,125,125,0.08); padding: 3px; border-radius: 8px; }
+        .lda-seg-item { padding: 4px 10px; font-size: 11px; cursor: pointer; border-radius: 6px; color: var(--lda-dim); font-weight: 500; transition: 0.2s; }
+        .lda-seg-item.active { background: var(--lda-bg); color: var(--lda-fg); box-shadow: 0 2px 5px rgba(0,0,0,0.05); font-weight: 600; }
+
+        .lda-spin { animation: lda-spin 0.8s linear infinite; }
+        @keyframes lda-spin { 100% { transform: rotate(360deg); } }
+    `;
+
+    // 主程序
+    class App {
+        constructor() {
+            this.state = {
+                lang: Utils.get(CONFIG.KEYS.LANG, 'zh'),
+                theme: Utils.get(CONFIG.KEYS.THEME, 'auto'), 
+                height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
+                expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
+                trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {})
+            };
+            this.dom = {};
+        }
+
+        async init() {
+            GM_addStyle(Styles);
+            this.renderLayout();
+            this.bindGlobalEvents();
+            this.applyTheme();
+            this.applyHeight();
+            this.restorePos();
+            
+            if (this.state.expand) {
+                this.togglePanel(true);
+            }
+        }
+
+        t(key) { return I18N[this.state.lang][key] || key; }
+
+        renderLayout() {
+            const root = document.createElement('div');
+            root.id = 'lda-root';
+            root.innerHTML = Utils.html`
+                <div class="lda-ball" title="${this.t('title')}">
+                    <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+                </div>
+                <div class="lda-panel">
+                    <div class="lda-head">
+                        <div class="lda-title">Linux.do Assistant</div>
+                        <div class="lda-actions">
+                            <div class="lda-icon-btn" id="lda-btn-theme" title="${this.t('theme_tip')}"></div>
+                            <div class="lda-icon-btn" id="lda-btn-close"><svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg></div>
+                        </div>
+                    </div>
+                    <div class="lda-tabs">
+                        <div class="lda-tab active" data-target="trust">${this.t('tab_trust')}</div>
+                        <div class="lda-tab" data-target="credit">${this.t('tab_credit')}</div>
+                        <div class="lda-tab" data-target="setting">${this.t('tab_setting')}</div>
+                    </div>
+                    <div class="lda-body">
+                        <div id="page-trust" class="lda-page active"></div>
+                        <div id="page-credit" class="lda-page"></div>
+                        <div id="page-setting" class="lda-page"></div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(root);
+
+            this.dom = {
+                root,
+                ball: Utils.el('.lda-ball', root),
+                panel: Utils.el('.lda-panel', root),
+                trust: Utils.el('#page-trust', root),
+                credit: Utils.el('#page-credit', root),
+                setting: Utils.el('#page-setting', root),
+                themeBtn: Utils.el('#lda-btn-theme', root),
+                tabs: Utils.els('.lda-tab', root),
+                head: Utils.el('.lda-head', root)
+            };
+
+            this.renderSettings();
+            this.updateThemeIcon();
+        }
+
+        renderSettings() {
+            const { lang, height, expand } = this.state;
+            const r = (val, cur) => val === cur ? 'active' : '';
+            
+            this.dom.setting.innerHTML = Utils.html`
+                <div class="lda-card">
+                    <div class="lda-opt">
+                        <div class="lda-opt-label">${this.t('set_auto')}</div>
+                        <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand?'checked':''}><span class="lda-slider"></span></label>
+                    </div>
+                    <div class="lda-opt">
+                        <div class="lda-opt-label">${this.t('set_lang')}</div>
+                        <div class="lda-seg" id="grp-lang">
+                            <div class="lda-seg-item ${r('zh', lang)}" data-v="zh">中文</div>
+                            <div class="lda-seg-item ${r('en', lang)}" data-v="en">EN</div>
+                        </div>
+                    </div>
+                    <div class="lda-opt">
+                        <div class="lda-opt-label">${this.t('set_size')}</div>
+                        <div class="lda-seg" id="grp-size">
+                            <div class="lda-seg-item ${r('sm', height)}" data-v="sm">${this.t('size_sm')}</div>
+                            <div class="lda-seg-item ${r('lg', height)}" data-v="lg">${this.t('size_lg')}</div>
+                            <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
+                        </div>
+                    </div>
+                </div>
+                <div style="text-align:center; font-size:10px; color:var(--lda-dim); margin-top:16px; opacity:0.6;">
+                    Ver 1.0.0 &bull; By Sauterne@Linux.do
+                </div>
+            `;
+        }
+
+        bindGlobalEvents() {
+            this.dom.ball.onclick = () => this.togglePanel(true);
+            Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
+
+            this.dom.tabs.forEach(t => t.onclick = () => {
+                this.dom.tabs.forEach(x => x.classList.remove('active'));
+                Utils.els('.lda-page', this.dom.root).forEach(x => x.classList.remove('active'));
+                t.classList.add('active');
+                Utils.el(`#page-${t.dataset.target}`, this.dom.root).classList.add('active');
+            });
+
+            this.dom.setting.onclick = (e) => {
+                const langNode = e.target.closest('#grp-lang .lda-seg-item');
+                if (langNode && langNode.dataset.v !== this.state.lang) {
+                    this.state.lang = langNode.dataset.v;
+                    Utils.set(CONFIG.KEYS.LANG, this.state.lang);
+                    this.dom.root.remove();
+                    this.init(); 
+                }
+                const sizeNode = e.target.closest('#grp-size .lda-seg-item');
+                if (sizeNode) {
+                    this.state.height = sizeNode.dataset.v;
+                    Utils.set(CONFIG.KEYS.HEIGHT, this.state.height);
+                    this.applyHeight();
+                    this.renderSettings();
+                }
+                if(e.target.id === 'inp-expand') {
+                    this.state.expand = e.target.checked;
+                    Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
+                }
+            };
+
+            this.dom.themeBtn.onclick = () => {
+                const modes = ['auto', 'light', 'dark'];
+                this.state.theme = modes[(modes.indexOf(this.state.theme) + 1) % 3];
+                Utils.set(CONFIG.KEYS.THEME, this.state.theme);
+                this.applyTheme();
+                this.updateThemeIcon();
+            };
+
+            this.initDrag();
+        }
+
+        async refreshTrust() {
+            const wrap = this.dom.trust;
+            // 查找刷新按钮是否已存在，用于显示 Loading
+            const existingBtn = Utils.el('#btn-re-trust', wrap);
+            if(existingBtn) existingBtn.classList.add('loading');
+            else wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+
+            try {
+                const html = await Utils.request(CONFIG.API.TRUST);
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const levelNode = Array.from(doc.querySelectorAll('h2')).find(x => x.textContent.includes('信任级别'));
+                if (!levelNode) throw new Error("Need Login");
+
+                const level = levelNode.textContent.replace(/\D/g, '');
+                const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
+                const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
+                
+                let listHtml = '';
+                const newCache = {}; 
+                const seenNames = {}; 
+
+                rows.forEach(tr => {
+                    const tds = tr.querySelectorAll('td');
+                    if (tds.length < 3) return;
+                    
+                    let name = tds[0].textContent.trim().split('（')[0];
+                    const current = parseFloat(tds[1].textContent.replace(/,/g, '')); 
+                    const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
+                    const isGood = tds[1].classList.contains('text-green-500');
+                    
+                    if (seenNames[name]) {
+                        name = name + ' (All)';
+                    }
+                    seenNames[name] = true;
+
+                    // --- Diff Logic ---
+                    const oldVal = this.state.trustCache[name];
+                    let diffHtml = '';
+                    
+                    if (typeof oldVal === 'number' && oldVal !== current) {
+                        const delta = current - oldVal;
+                        if (delta > 0) diffHtml = `<span class="lda-diff up">▲${delta}</span>`;
+                        else if (delta < 0) diffHtml = `<span class="lda-diff down">▼${Math.abs(delta)}</span>`;
+                    }
+
+                    newCache[name] = current;
+                    
+                    let pct = 0;
+                    if (target > 0) pct = Math.min((current/target)*100, 100);
+                    else if (isGood) pct = 100;
+
+                    listHtml += Utils.html`
+                        <div class="lda-item">
+                            <div class="lda-item-top">
+                                <span class="lda-i-name">${name}</span>
+                                <span class="lda-i-val" style="color:${isGood?'var(--lda-green)':'var(--lda-red)'}">
+                                    ${tds[1].textContent.trim()} ${diffHtml} <span style="color:var(--lda-dim);font-weight:400;margin-left:4px">/ ${target||'-'}</span>
+                                </span>
+                            </div>
+                            <div class="lda-progress"><div class="lda-fill" style="width:${pct}%; background:${isGood?'var(--lda-green)':'var(--lda-red)'}"></div></div>
+                        </div>
+                    `;
+                });
+
+                this.state.trustCache = newCache;
+                Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+
+                wrap.innerHTML = Utils.html`
+                    <div class="lda-card">
+                        <div class="lda-actions-group">
+                            <a href="${CONFIG.API.LINK_TRUST}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
+                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                            </a>
+                            <div class="lda-act-btn" id="btn-re-trust" title="${this.t('refresh_tip')}">
+                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+                            </div>
+                        </div>
+                        <div class="lda-info-header">
+                            <div class="lda-lvl-group">
+                                <span class="lda-big-lvl">Lv.${level}</span>
+                                <span class="lda-badge ${isPass?'ok':'no'}">${isPass ? this.t('status_ok') : this.t('status_fail')}</span>
+                            </div>
+                        </div>
+                        ${listHtml}
+                    </div>
+                `;
+                Utils.el('#btn-re-trust', wrap).onclick = () => this.refreshTrust();
+
+            } catch (e) {
+                wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-trust" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
+                Utils.el('#retry-trust', wrap).onclick = () => this.refreshTrust();
+            }
+        }
+
+        async refreshCredit() {
+            const wrap = this.dom.credit;
+            const existingBtn = Utils.el('#btn-re-credit', wrap);
+            if(existingBtn) existingBtn.classList.add('loading');
+            else wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
+
+            try {
+                const [infoRes, statRes] = await Promise.all([
+                    Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true }),
+                    Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true })
+                ]);
+                const info = JSON.parse(infoRes).data;
+                const stats = JSON.parse(statRes).data || [];
+                let listHtml = '';
+                if(stats.length === 0) listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
+                else {
+                    [...stats].reverse().forEach(x => {
+                        const date = x.date.slice(5).replace('-','/');
+                        const inc = parseFloat(x.income);
+                        const exp = parseFloat(x.expense);
+                        if(inc > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('income')}</span><span class="lda-amt" style="color:var(--lda-red)">+${inc}</span></div>`;
+                        if(exp > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('expense')}</span><span class="lda-amt" style="color:var(--lda-green)">-${exp}</span></div>`;
+                    });
+                }
+                wrap.innerHTML = Utils.html`
+                    <div class="lda-card">
+                        <div class="lda-actions-group">
+                            <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}">
+                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
+                            </a>
+                            <div class="lda-act-btn" id="btn-re-credit" title="${this.t('refresh_tip')}">
+                                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
+                            </div>
+                        </div>
+                        <div class="lda-credit-hero">
+                            <div class="lda-credit-num">${info.available_balance}</div>
+                            <div class="lda-credit-label">${this.t('balance')}</div>
+                            <div style="margin-top:6px;font-size:12px;color:var(--lda-dim)">${this.t('daily_limit')}: <span style="font-weight:600;color:var(--lda-fg)">${info.remain_quota}</span></div>
+                        </div>
+                    </div>
+                    <div class="lda-card">
+                        <div style="font-size:11px;font-weight:700;color:var(--lda-dim);margin-bottom:10px;">${this.t('recent')}</div>
+                        ${listHtml}
+                    </div>
+                `;
+                Utils.el('#btn-re-credit', wrap).onclick = () => this.refreshCredit();
+            } catch(e) {
+                wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}</div>`;
+            }
+        }
+
+        togglePanel(show) {
+            this.dom.ball.style.display = show ? 'none' : 'flex';
+            this.dom.panel.style.display = show ? 'flex' : 'none';
+            if (show && !this.dom.panel.dataset.loaded) {
+                this.refreshTrust();
+                this.refreshCredit();
+                this.dom.panel.dataset.loaded = '1';
+            }
+        }
+
+        applyTheme() {
+            const { theme } = this.state;
+            let isDark = (theme === 'dark');
+            if (theme === 'auto') isDark = window.matchMedia('(prefers-color-scheme: dark)').matches || document.documentElement.className.includes('dark');
+            this.dom.root.classList.toggle('lda-dark', isDark);
+        }
+
+        updateThemeIcon() {
+            const icons = {
+                light: '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41L5.99 4.58zm12.37 12.37a.996.996 0 00-1.41 0 .996.996 0 000 1.41l1.06 1.06c.39.39 1.03.39 1.41 0s.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96a.996.996 0 000-1.41.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41a.996.996 0 00-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41s1.03.39 1.41 0l1.06-1.06z"/></svg>',
+                dark: '<svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M12 3c-4.97 0-9 4.03-9 9s4.03 9 9 9 9-4.03 9-9c0-.46-.04-.92-.1-1.36-.98 1.37-2.58 2.26-4.4 2.26-2.98 0-5.4-2.42-5.4-5.4 0-1.81.89-3.42 2.26-4.4-.44-.06-.9-.1-1.36-.1z"/></svg>',
+                auto: '<svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M20 18c1.1 0 1.99-.9 1.99-2L22 6c0-1.1-.9-2-2-2H4c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2H0v2h24v-2h-4zM4 6h16v10H4V6z"/></svg>'
+            };
+            this.dom.themeBtn.innerHTML = icons[this.state.theme];
+        }
+
+        applyHeight() {
+            this.dom.panel.className = `lda-panel h-${this.state.height}`;
+        }
+
+        initDrag() {
+            let isDrag = false, startX, startY, startR, startT;
+            const onMove = (e) => {
+                if(!isDrag) return;
+                const dx = e.clientX - startX;
+                const dy = e.clientY - startY;
+                requestAnimationFrame(() => {
+                    this.dom.root.style.right = Math.max(0, startR - dx) + 'px';
+                    this.dom.root.style.top = Math.max(0, startT + dy) + 'px';
+                });
+            };
+            const onUp = () => {
+                if(isDrag) {
+                    isDrag = false;
+                    document.removeEventListener('mousemove', onMove);
+                    document.removeEventListener('mouseup', onUp);
+                    const r = this.dom.root.getBoundingClientRect();
+                    Utils.set(CONFIG.KEYS.POS, { r: window.innerWidth - r.right, t: r.top });
+                }
+            };
+            this.dom.head.onmousedown = (e) => {
+                if(e.target.closest('.lda-icon-btn')) return;
+                isDrag = true;
+                startX = e.clientX; startY = e.clientY;
+                const rect = this.dom.root.getBoundingClientRect();
+                startR = window.innerWidth - rect.right; startT = rect.top;
+                document.addEventListener('mousemove', onMove);
+                document.addEventListener('mouseup', onUp);
+                e.preventDefault();
+            };
+        }
+
+        restorePos() {
+            const p = Utils.get(CONFIG.KEYS.POS, { r: 20, t: 100 });
+            this.dom.root.style.right = p.r + 'px';
+            this.dom.root.style.top = p.t + 'px';
+        }
+    }
+
+    new App().init();
+})();
