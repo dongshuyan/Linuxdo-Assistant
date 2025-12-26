@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.2.0
+// @version      1.2.2
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -77,7 +77,7 @@
             new_version: "发现新版本",
             latest: "已是最新",
             update_err: "检查失败",
-            rank: "排名",
+            rank: "总排名",
             rank_today: "今日",
             score: "积分"
         },
@@ -138,16 +138,25 @@
         
         // 获取论坛排名数据
         static async fetchForumStats() {
+            const baseUrl = window.location.origin;
             const fetchJson = (url) => fetch(url).then(r => r.json()).catch(() => null);
             try {
                 const [daily, global] = await Promise.all([
                     fetchJson(CONFIG.API.LEADERBOARD_DAILY),
                     fetchJson(CONFIG.API.LEADERBOARD)
                 ]);
+                // 尝试从 leaderboard 获取积分
+                let score = global?.personal?.total_score || global?.personal?.score || null;
+                // 如果没有积分，尝试从用户 API 获取
+                if (!score && global?.personal?.user?.username) {
+                    const username = global.personal.user.username;
+                    const userInfo = await fetchJson(`${baseUrl}/u/${username}.json`);
+                    score = userInfo?.user?.gamification_score || null;
+                }
                 return {
                     dailyRank: daily?.personal?.position || null,
                     globalRank: global?.personal?.position || null,
-                    score: global?.personal?.score || null
+                    score: score
                 };
             } catch (e) {
                 return { dailyRank: null, globalRank: null, score: null };
@@ -194,7 +203,7 @@
 
         /* 面板 */
         .lda-panel {
-            width: 320px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            width: 340px; background: var(--lda-bg); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
             border: var(--lda-border); border-radius: var(--lda-rad); box-shadow: var(--lda-shadow);
             display: none; flex-direction: column; overflow: hidden; margin-top: 14px;
             transform-origin: top right; animation: lda-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -255,12 +264,12 @@
 
         /* 排名统计栏 */
         .lda-stats-bar {
-            display: flex; gap: 12px; margin-top: 10px; padding: 10px 12px;
-            background: rgba(125,125,125,0.05); border-radius: 8px; flex-wrap: wrap;
+            display: flex; gap: 10px; margin-top: 10px; padding: 8px 10px;
+            background: rgba(125,125,125,0.05); border-radius: 8px; white-space: nowrap;
         }
         .lda-stats-bar a { text-decoration: none; color: inherit; }
-        .lda-stat-item { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--lda-dim); }
-        .lda-stat-item .num { font-weight: 700; font-size: 14px; }
+        .lda-stat-item { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--lda-dim); }
+        .lda-stat-item .num { font-weight: 700; font-size: 13px; }
         .lda-stat-item .num.rank { color: #e74c3c; }
         .lda-stat-item .num.today { color: #f39c12; }
         .lda-stat-item .num.score { color: #27ae60; }
@@ -571,9 +580,9 @@
                 let statsHtml = '';
                 if (forumStats.globalRank || forumStats.dailyRank || forumStats.score) {
                     statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar">`;
-                    if (forumStats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')} <span class="num rank">#${forumStats.globalRank}</span></span>`;
-                    if (forumStats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')} <span class="num today">#${forumStats.dailyRank}</span></span>`;
-                    if (forumStats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')} <span class="num score">${forumStats.score.toLocaleString()}</span></span>`;
+                    if (forumStats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')}: <span class="num today">${forumStats.dailyRank}</span></span>`;
+                    if (forumStats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')}: <span class="num rank">${forumStats.globalRank}</span></span>`;
+                    if (forumStats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${forumStats.score.toLocaleString()}</span></span>`;
                     statsHtml += `</a>`;
                 }
 
