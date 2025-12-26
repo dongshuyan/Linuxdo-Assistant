@@ -40,8 +40,9 @@
 
 ### 前提条件
 
-安装脚本前，你需要先安装一个用户脚本管理器扩展。推荐使用 **Tampermonkey**：
+安装脚本前，你需要先安装一个用户脚本管理器扩展。推荐使用**Tampermonkey**：
 
+**Tampermonkey**
 - [Chrome 版](https://chrome.google.com/webstore/detail/tampermonkey/dhdgffkkebhmkfjojejmpbldmpobfkfo)
 - [Firefox 版](https://addons.mozilla.org/en-US/firefox/addon/tampermonkey/)
 - [Edge 版](https://microsoftedge.microsoft.com/addons/detail/tampermonkey/iikmkjmpaadaobahmlepeloendndfphd)
@@ -104,6 +105,7 @@
 - 排名/积分数据来自 linux.do 主站
 - Credit 数据来自 credit.linux.do，首次使用需完成 OAuth 授权
 - CDK 社区分数来自 cdk.linux.do，首次使用需访问 [cdk.linux.do/dashboard](https://cdk.linux.do/dashboard) 完成 OAuth 授权
+- 若使用 Tampermonkey，请允许脚本在 cdk.linux.do 域运行；授权后切回 linux.do 若仍为空，打开 cdk.linux.do/dashboard 刷新一次再回到主站
 - 如果数据加载失败，请检查网络连接或尝试刷新
 
 ## 🙏 致谢
