@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.3.2
+// @version      1.4.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -45,7 +45,7 @@
             HEIGHT: 'lda_v4_height',
             LANG: 'lda_v4_lang',
             CACHE_TRUST: 'lda_v4_cache_trust',
-            FIRST_TAB: 'lda_v4_first_tab'
+            TAB_ORDER: 'lda_v5_tab_order'
         }
     };
 
@@ -89,10 +89,10 @@
             credit_auth_tip: "需先完成授权才能查看积分数据",
             credit_go_auth: "前往登录",
             credit_refresh: "刷新",
-            set_first_tab: "首页标签",
-            tab_trust_first: "信任级别",
-            tab_credit_first: "积分详情",
-            tab_cdk_first: "CDK分数",
+            set_tab_order: "标签顺序",
+            tab_order_tip: "拖拽调整顺序",
+            tab_order_save: "保存顺序",
+            tab_order_saved: "已保存",
             cdk_score: "CDK分数",
             cdk_trust_level: "信任等级",
             cdk_username: "用户名",
@@ -141,10 +141,10 @@
             credit_auth_tip: "Please authorize to view credit data",
             credit_go_auth: "Go to Login",
             credit_refresh: "Refresh",
-            set_first_tab: "Default Tab",
-            tab_trust_first: "Trust Level",
-            tab_credit_first: "Credits",
-            tab_cdk_first: "CDK Score",
+            set_tab_order: "Tab Order",
+            tab_order_tip: "Drag to reorder",
+            tab_order_save: "Save Order",
+            tab_order_saved: "Saved",
             cdk_score: "CDK Score",
             cdk_trust_level: "Trust Level",
             cdk_username: "Username",
@@ -392,6 +392,27 @@
 
         .lda-spin { animation: lda-spin 0.8s linear infinite; }
         @keyframes lda-spin { 100% { transform: rotate(360deg); } }
+
+        /* 拖拽排序 */
+        .lda-sortable { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+        .lda-sort-item {
+            display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+            background: var(--lda-bg); border: var(--lda-border); border-radius: 8px;
+            cursor: grab; user-select: none; transition: all 0.2s;
+        }
+        .lda-sort-item:hover { background: rgba(125,125,125,0.08); }
+        .lda-sort-item.dragging { opacity: 0.5; cursor: grabbing; transform: scale(1.02); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+        .lda-sort-item.drag-over { border-color: var(--lda-accent); background: rgba(59, 130, 246, 0.08); }
+        .lda-sort-handle { color: var(--lda-dim); display: flex; align-items: center; }
+        .lda-sort-label { flex: 1; font-size: 13px; font-weight: 500; }
+        .lda-sort-num { width: 20px; height: 20px; border-radius: 50%; background: var(--lda-accent); color: #fff; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+        .lda-sort-btn {
+            margin-top: 8px; padding: 8px 16px; background: var(--lda-accent); color: #fff;
+            border: none; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer;
+            transition: all 0.2s; width: 100%;
+        }
+        .lda-sort-btn:hover { opacity: 0.9; }
+        .lda-sort-btn.saved { background: var(--lda-green); }
     `;
 
     // 主程序
@@ -403,7 +424,7 @@
                 height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
                 expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
-                firstTab: Utils.get(CONFIG.KEYS.FIRST_TAB, 'trust') // trust 或 credit
+                tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']) // 标签顺序
             };
             this.dom = {};
         }
@@ -426,18 +447,14 @@
         renderLayout() {
             const root = document.createElement('div');
             root.id = 'lda-root';
-            // 定义所有标签
-            const allTabs = [
-                { key: 'trust', label: this.t('tab_trust') },
-                { key: 'credit', label: this.t('tab_credit') },
-                { key: 'cdk', label: this.t('tab_cdk') }
-            ];
-            // 根据 firstTab 设置排序（选中的放第一个）
-            const firstTab = this.state.firstTab;
-            const orderedTabs = [
-                allTabs.find(t => t.key === firstTab) || allTabs[0],
-                ...allTabs.filter(t => t.key !== firstTab)
-            ];
+            // 定义所有标签的映射
+            const tabMap = {
+                trust: { key: 'trust', label: this.t('tab_trust') },
+                credit: { key: 'credit', label: this.t('tab_credit') },
+                cdk: { key: 'cdk', label: this.t('tab_cdk') }
+            };
+            // 根据 tabOrder 获取排序后的标签
+            const orderedTabs = this.state.tabOrder.map(key => tabMap[key]);
             root.innerHTML = Utils.html`
                 <div class="lda-ball" title="${this.t('title')}">
                     <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
@@ -484,8 +501,26 @@
         }
 
         renderSettings() {
-            const { lang, height, expand } = this.state;
+            const { lang, height, expand, tabOrder } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
+            
+            // 标签名称映射
+            const tabNames = {
+                trust: this.t('tab_trust'),
+                credit: this.t('tab_credit'),
+                cdk: this.t('tab_cdk')
+            };
+            
+            // 生成排序项 HTML
+            const sortItemsHtml = tabOrder.map((key, idx) => `
+                <div class="lda-sort-item" draggable="true" data-key="${key}">
+                    <div class="lda-sort-handle">
+                        <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+                    </div>
+                    <span class="lda-sort-num">${idx + 1}</span>
+                    <span class="lda-sort-label">${tabNames[key]}</span>
+                </div>
+            `).join('');
             
             this.dom.setting.innerHTML = Utils.html`
                 <div class="lda-card">
@@ -508,13 +543,15 @@
                             <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
                         </div>
                     </div>
-                    <div class="lda-opt">
-                        <div class="lda-opt-label">${this.t('set_first_tab')}</div>
-                        <div class="lda-seg" id="grp-tab">
-                            <div class="lda-seg-item ${r('trust', this.state.firstTab)}" data-v="trust">${this.t('tab_trust_first')}</div>
-                            <div class="lda-seg-item ${r('credit', this.state.firstTab)}" data-v="credit">${this.t('tab_credit_first')}</div>
-                            <div class="lda-seg-item ${r('cdk', this.state.firstTab)}" data-v="cdk">${this.t('tab_cdk_first')}</div>
+                    <div class="lda-opt" style="flex-direction:column; align-items:stretch;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                            <div class="lda-opt-label">${this.t('set_tab_order')}</div>
+                            <span style="font-size:10px; color:var(--lda-dim)">${this.t('tab_order_tip')}</span>
                         </div>
+                        <div class="lda-sortable" id="sortable-tabs">
+                            ${sortItemsHtml}
+                        </div>
+                        <button class="lda-sort-btn" id="btn-save-order">${this.t('tab_order_save')}</button>
                     </div>
                 </div>
                 <div style="text-align:center; margin-top:16px;">
@@ -531,6 +568,93 @@
             `;
             
             Utils.el('#btn-check-update', this.dom.setting).onclick = () => this.checkUpdate();
+            this.initSortable();
+        }
+        
+        initSortable() {
+            const container = Utils.el('#sortable-tabs', this.dom.setting);
+            const saveBtn = Utils.el('#btn-save-order', this.dom.setting);
+            let draggedItem = null;
+            
+            // 更新序号显示
+            const updateNumbers = () => {
+                const items = container.querySelectorAll('.lda-sort-item');
+                items.forEach((item, idx) => {
+                    item.querySelector('.lda-sort-num').textContent = idx + 1;
+                });
+            };
+            
+            // 拖拽开始
+            container.addEventListener('dragstart', (e) => {
+                if (e.target.classList.contains('lda-sort-item')) {
+                    draggedItem = e.target;
+                    e.target.classList.add('dragging');
+                    e.dataTransfer.effectAllowed = 'move';
+                }
+            });
+            
+            // 拖拽结束
+            container.addEventListener('dragend', (e) => {
+                if (e.target.classList.contains('lda-sort-item')) {
+                    e.target.classList.remove('dragging');
+                    container.querySelectorAll('.lda-sort-item').forEach(item => {
+                        item.classList.remove('drag-over');
+                    });
+                    draggedItem = null;
+                    updateNumbers();
+                }
+            });
+            
+            // 拖拽经过
+            container.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                e.dataTransfer.dropEffect = 'move';
+                const target = e.target.closest('.lda-sort-item');
+                if (target && target !== draggedItem) {
+                    container.querySelectorAll('.lda-sort-item').forEach(item => {
+                        item.classList.remove('drag-over');
+                    });
+                    target.classList.add('drag-over');
+                }
+            });
+            
+            // 放置
+            container.addEventListener('drop', (e) => {
+                e.preventDefault();
+                const target = e.target.closest('.lda-sort-item');
+                if (target && target !== draggedItem && draggedItem) {
+                    const items = [...container.querySelectorAll('.lda-sort-item')];
+                    const draggedIdx = items.indexOf(draggedItem);
+                    const targetIdx = items.indexOf(target);
+                    
+                    if (draggedIdx < targetIdx) {
+                        target.after(draggedItem);
+                    } else {
+                        target.before(draggedItem);
+                    }
+                    updateNumbers();
+                }
+            });
+            
+            // 保存按钮
+            saveBtn.onclick = () => {
+                const items = container.querySelectorAll('.lda-sort-item');
+                const newOrder = [...items].map(item => item.dataset.key);
+                this.state.tabOrder = newOrder;
+                Utils.set(CONFIG.KEYS.TAB_ORDER, newOrder);
+                
+                // 显示保存成功
+                saveBtn.textContent = this.t('tab_order_saved');
+                saveBtn.classList.add('saved');
+                setTimeout(() => {
+                    saveBtn.textContent = this.t('tab_order_save');
+                    saveBtn.classList.remove('saved');
+                }, 1500);
+                
+                // 重新渲染应用新顺序
+                this.dom.root.remove();
+                this.init();
+            };
         }
 
         bindGlobalEvents() {
@@ -565,13 +689,6 @@
                     Utils.set(CONFIG.KEYS.HEIGHT, this.state.height);
                     this.applyHeight();
                     this.renderSettings();
-                }
-                const tabNode = e.target.closest('#grp-tab .lda-seg-item');
-                if (tabNode && tabNode.dataset.v !== this.state.firstTab) {
-                    this.state.firstTab = tabNode.dataset.v;
-                    Utils.set(CONFIG.KEYS.FIRST_TAB, this.state.firstTab);
-                    this.dom.root.remove();
-                    this.init(); // 重新渲染以应用新顺序
                 }
                 if(e.target.id === 'inp-expand') {
                     this.state.expand = e.target.checked;
