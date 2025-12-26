@@ -51,6 +51,7 @@
             CACHE_CDK: 'lda_v5_cache_cdk'
         }
     };
+    const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
 
     // 多语言
     const I18N = {
@@ -474,6 +475,8 @@
                 tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']) // 标签顺序
             };
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
+            this.focusFlags = { trust: false, credit: false, cdk: false };
+            this.autoRefreshTimer = null;
             this.cdkBridgeInit = false;
             this.cdkBridgeFrame = null;
             this.cdkWaiters = [];
@@ -482,6 +485,10 @@
         }
 
         async init(forceOpen = false) {
+            if (this.autoRefreshTimer) {
+                clearInterval(this.autoRefreshTimer);
+                this.autoRefreshTimer = null;
+            }
             GM_addStyle(Styles);
             this.renderLayout();
             this.bindGlobalEvents();
@@ -489,6 +496,7 @@
             this.applyHeight();
             this.restorePos();
             this.updatePanelSide();
+            this.startAutoRefreshTimer();
             
             if (this.state.expand || forceOpen) {
                 this.togglePanel(true);
@@ -768,13 +776,7 @@
             };
 
             // 窗口获得焦点时自动刷新 Credit 和 CDK（用户授权后回来）
-            window.addEventListener('focus', () => {
-                if (this.dom.panel.style.display === 'flex') {
-                    this.refreshTrust();
-                    this.refreshCredit();
-                    this.refreshCDK();
-                }
-            });
+            window.addEventListener('focus', () => this.refreshOnFocusIfNeeded());
 
             window.addEventListener('resize', () => {
                 this.updatePanelSide();
@@ -809,6 +811,7 @@
                 const level = levelNode.textContent.replace(/\D/g, '');
                 const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
                 const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
+                if (rows.length === 0) this.focusFlags.trust = true;
                 
                 let listHtml = '';
                 const newCache = {}; 
@@ -897,11 +900,13 @@
 
                 // 自动重试一次，再显示 Retry
                 if (autoRetry && !isLogin) {
+                    this.focusFlags.trust = true;
                     setTimeout(() => this.refreshTrust(false), 200);
                     return;
                 }
 
                 if (isLogin) {
+                    this.focusFlags.trust = true;
                     wrap.innerHTML = `
                         <div class="lda-card lda-auth-card">
                             <div class="lda-auth-icon">
@@ -921,6 +926,7 @@
 
                 wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-trust" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
                 Utils.el('#retry-trust', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust(); };
+                this.focusFlags.trust = true;
             }
         }
 
@@ -938,8 +944,10 @@
                 const info = JSON.parse(infoRes).data;
                 const stats = JSON.parse(statRes).data || [];
                 let listHtml = '';
-                if(stats.length === 0) listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
-                else {
+                if(stats.length === 0) {
+                    listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
+                    this.focusFlags.credit = true; // 记录空数据，回到前台再拉取
+                } else {
                     [...stats].reverse().forEach(x => {
                         const date = x.date.slice(5).replace('-','/');
                         const inc = parseFloat(x.income);
@@ -975,12 +983,14 @@
 
                 if (autoRetry && !isLogin) {
                     if (existingBtn) existingBtn.classList.remove('loading');
+                    this.focusFlags.credit = true;
                     setTimeout(() => this.refreshCredit(false), 200);
                     return;
                 }
 
                 if (isLogin) {
                     if (existingBtn) existingBtn.classList.remove('loading');
+                    this.focusFlags.credit = true;
                     wrap.innerHTML = `
                         <div class="lda-card lda-auth-card">
                             <div class="lda-auth-icon">
@@ -1001,6 +1011,7 @@
                 wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}<br><button id="retry-credit" style="margin-top:8px;padding:4px 12px;">Retry</button></div>`;
                 Utils.el('#retry-credit', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshCredit(); };
                 if (existingBtn) existingBtn.classList.remove('loading');
+                this.focusFlags.credit = true;
             }
         }
 
@@ -1040,8 +1051,35 @@
                 setLoading(false);
                 // 如果已经展示了缓存，就不覆盖为未授权提示
                 if (this.isCDKCacheFresh()) return;
+                this.focusFlags.cdk = true;
                 this.renderCDKAuth();
             }
+        }
+
+        refreshOnFocusIfNeeded() {
+            if (this.dom.panel.style.display !== 'flex') return;
+            const flags = this.focusFlags;
+            if (flags.trust) {
+                flags.trust = false;
+                this.refreshTrust();
+            }
+            if (flags.credit) {
+                flags.credit = false;
+                this.refreshCredit();
+            }
+            if (flags.cdk) {
+                flags.cdk = false;
+                this.refreshCDK();
+            }
+        }
+
+        startAutoRefreshTimer() {
+            this.autoRefreshTimer = setInterval(() => {
+                if (this.dom.panel.style.display !== 'flex') return;
+                this.refreshTrust(false);
+                this.refreshCredit(false);
+                this.refreshCDK();
+            }, AUTO_REFRESH_MS);
         }
 
         async fetchCDKDirect() {
@@ -1147,6 +1185,7 @@
         }
 
         renderCDKAuth() {
+            this.focusFlags.cdk = true;
             const wrap = this.dom.cdk;
             wrap.innerHTML = `
                 <div class="lda-card lda-auth-card">
