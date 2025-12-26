@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -157,12 +157,13 @@
         /* 悬浮球 */
         .lda-ball {
             width: 44px; height: 44px; background: var(--lda-accent); border-radius: 50%;
-            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); cursor: pointer;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); cursor: grab;
             display: flex; align-items: center; justify-content: center; color: #fff;
-            transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
+            transition: transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.2s;
         }
-        .lda-ball:hover { transform: scale(1.1) rotate(10deg); }
-        .lda-ball svg { width: 24px; height: 24px; fill: currentColor; }
+        .lda-ball:hover { transform: scale(1.1) rotate(10deg); box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6); }
+        .lda-ball.dragging { cursor: grabbing; transform: scale(1.15); box-shadow: 0 8px 25px rgba(59, 130, 246, 0.7); }
+        .lda-ball svg { width: 24px; height: 24px; fill: currentColor; pointer-events: none; }
 
         /* 面板 */
         .lda-panel {
@@ -406,8 +407,15 @@
         }
 
         bindGlobalEvents() {
-            this.dom.ball.onclick = () => this.togglePanel(true);
+            // 悬浮球点击在 initDrag 中处理（区分拖动和点击）
             Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
+            
+            // 点击页面其他地方收起面板
+            document.addEventListener('click', (e) => {
+                if (!this.dom.root.contains(e.target) && this.dom.panel.style.display === 'flex') {
+                    this.togglePanel(false);
+                }
+            });
 
             this.dom.tabs.forEach(t => t.onclick = () => {
                 this.dom.tabs.forEach(x => x.classList.remove('active'));
@@ -624,35 +632,62 @@
         }
 
         initDrag() {
-            let isDrag = false, startX, startY, startR, startT;
+            let isDrag = false, hasDragged = false, startX, startY, startR, startT;
+            
             const onMove = (e) => {
-                if(!isDrag) return;
+                if (!isDrag) return;
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
+                // 移动超过 5px 才算拖动
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) hasDragged = true;
                 requestAnimationFrame(() => {
                     this.dom.root.style.right = Math.max(0, startR - dx) + 'px';
-                    this.dom.root.style.top = Math.max(0, startT + dy) + 'px';
+                    this.dom.root.style.top = Math.max(0, Math.min(startT + dy, window.innerHeight - 50)) + 'px';
                 });
             };
+            
             const onUp = () => {
-                if(isDrag) {
+                if (isDrag) {
                     isDrag = false;
+                    this.dom.ball.classList.remove('dragging');
                     document.removeEventListener('mousemove', onMove);
                     document.removeEventListener('mouseup', onUp);
                     const r = this.dom.root.getBoundingClientRect();
                     Utils.set(CONFIG.KEYS.POS, { r: window.innerWidth - r.right, t: r.top });
                 }
             };
-            this.dom.head.onmousedown = (e) => {
-                if(e.target.closest('.lda-icon-btn')) return;
+            
+            const startDrag = (e, target) => {
+                if (e.button !== 0) return; // 只响应左键
+                if (target === this.dom.head && e.target.closest('.lda-icon-btn')) return;
                 isDrag = true;
-                startX = e.clientX; startY = e.clientY;
+                hasDragged = false;
+                startX = e.clientX;
+                startY = e.clientY;
                 const rect = this.dom.root.getBoundingClientRect();
-                startR = window.innerWidth - rect.right; startT = rect.top;
+                startR = window.innerWidth - rect.right;
+                startT = rect.top;
+                if (target === this.dom.ball) this.dom.ball.classList.add('dragging');
                 document.addEventListener('mousemove', onMove);
                 document.addEventListener('mouseup', onUp);
                 e.preventDefault();
             };
+            
+            // 悬浮球拖动
+            this.dom.ball.onmousedown = (e) => startDrag(e, this.dom.ball);
+            
+            // 悬浮球点击（区分拖动和点击）
+            this.dom.ball.onclick = (e) => {
+                if (hasDragged) {
+                    hasDragged = false;
+                    e.stopPropagation();
+                    return;
+                }
+                this.togglePanel(true);
+            };
+            
+            // 面板头部拖动
+            this.dom.head.onmousedown = (e) => startDrag(e, this.dom.head);
         }
 
         restorePos() {
