@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.2.2
+// @version      1.2.3
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -79,7 +79,10 @@
             update_err: "检查失败",
             rank: "总排名",
             rank_today: "今日",
-            score: "积分"
+            score: "积分",
+            credit_not_auth: "尚未登录 Credit",
+            credit_auth_tip: "需先完成授权才能查看积分数据",
+            credit_go_auth: "前往登录"
         },
         en: {
             title: "Linux.do HUD",
@@ -113,7 +116,10 @@
             update_err: "Check failed",
             rank: "Rank",
             rank_today: "Today",
-            score: "Score"
+            score: "Score",
+            credit_not_auth: "Credit Not Logged In",
+            credit_auth_tip: "Please authorize to view credit data",
+            credit_go_auth: "Go to Login"
         }
     };
 
@@ -316,6 +322,18 @@
         .lda-credit-label { font-size: 11px; text-transform: uppercase; color: var(--lda-dim); margin-top: 4px; letter-spacing: 1px; }
         
         .lda-row-rec { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed rgba(125,125,125,0.2); font-size: 12px; }
+
+        /* Credit 授权提示卡片 */
+        .lda-auth-card { text-align: center; padding: 30px 20px; }
+        .lda-auth-icon { color: var(--lda-dim); opacity: 0.5; margin-bottom: 12px; }
+        .lda-auth-title { font-size: 15px; font-weight: 600; color: var(--lda-fg); margin-bottom: 6px; }
+        .lda-auth-tip { font-size: 12px; color: var(--lda-dim); margin-bottom: 16px; }
+        .lda-auth-btn {
+            display: inline-block; padding: 10px 24px; background: var(--lda-accent); color: #fff;
+            border-radius: 8px; font-size: 13px; font-weight: 600; text-decoration: none;
+            transition: all 0.2s; box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        }
+        .lda-auth-btn:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4); }
         .lda-row-rec:last-child { border: none; }
         .lda-amt { font-weight: 600; font-family: monospace; }
 
@@ -661,7 +679,16 @@
                 `;
                 Utils.el('#btn-re-credit', wrap).onclick = () => this.refreshCredit();
             } catch(e) {
-                wrap.innerHTML = `<div class="lda-card" style="text-align:center;color:var(--lda-red)">${this.t('connect_err')}</div>`;
+                wrap.innerHTML = `
+                    <div class="lda-card lda-auth-card">
+                        <div class="lda-auth-icon">
+                            <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M17.13,17C15.92,18.85 14.11,20.24 12,20.92C9.89,20.24 8.08,18.85 6.87,17C6.53,16.5 6.24,16 6,15.47C6,13.82 8.71,12.47 12,12.47C15.29,12.47 18,13.79 18,15.47C17.76,16 17.47,16.5 17.13,17Z"/></svg>
+                        </div>
+                        <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
+                        <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
+                        <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn">${this.t('credit_go_auth')} →</a>
+                    </div>
+                `;
             }
         }
 
