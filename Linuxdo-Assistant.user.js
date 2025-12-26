@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      1.8.0
+// @version      1.9.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -1225,14 +1225,15 @@
                 const statsPromise = Utils.fetchForumStats();
 
                 const trustData = await trustPromise.then(html => {
-                    const doc = new DOMParser().parseFromString(html, 'text/html');
-                    const bodyText = doc.body?.textContent || '';
-                    const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
-                    const levelNode = Array.from(doc.querySelectorAll('h2')).find(x => x.textContent.includes('信任级别'));
-                    if (!levelNode) {
-                        if (loginHint || /登录|login|sign in/i.test(bodyText)) throw new Error("NeedLogin");
-                        throw new Error("ParseError");
-                    }
+                const doc = new DOMParser().parseFromString(html, 'text/html');
+                const bodyText = doc.body?.textContent || '';
+                const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
+                const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
+                if (!levelNode) {
+                    const possibleTable = doc.querySelector('table');
+                    if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
+                    if (!possibleTable) throw new Error("ParseError");
+                }
 
                     const level = levelNode.textContent.replace(/\D/g, '');
                     const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
