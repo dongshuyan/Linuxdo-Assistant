@@ -1036,11 +1036,10 @@
                     Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
                 }
                 if (e.target.id === 'btn-clear-cache') {
-                    const confirmed = window.confirm(this.t('clear_cache_tip'));
-                    if (confirmed) {
+                    this.showConfirm(this.t('clear_cache_tip'), () => {
                         this.clearAllCaches(false);
                         this.showToast(this.t('clear_cache_done'), 'success');
-                    }
+                    });
                 }
                 if (wasOpen) this.togglePanel(true);
             };
@@ -1903,17 +1902,46 @@
         }
         
         showToast(msg, type = 'info') {
+            const host = this.dom?.panel || document.body;
             const toast = document.createElement('div');
             toast.style.cssText = `
-                position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-                padding: 10px 20px; border-radius: 8px; font-size: 13px; z-index: 999999;
+                position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+                padding: 10px 16px; border-radius: 8px; font-size: 13px; z-index: 1000000;
                 background: ${type === 'success' ? 'var(--lda-green)' : type === 'error' ? 'var(--lda-red)' : 'var(--lda-accent)'};
-                color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.2);
-                animation: lda-fade 0.3s;
+                color: #fff; box-shadow: 0 4px 12px rgba(0,0,0,0.2); pointer-events:none;
+                animation: lda-fade 0.2s; white-space: nowrap;
             `;
             toast.textContent = msg;
-            document.body.appendChild(toast);
+            host.appendChild(toast);
             setTimeout(() => toast.remove(), 2500);
+        }
+
+        showConfirm(message, onOk) {
+            const host = this.dom?.panel || document.body;
+            const mask = document.createElement('div');
+            mask.style.cssText = `
+                position:absolute; inset:0; background:rgba(0,0,0,0.15); z-index:1000000;
+                display:flex; align-items:center; justify-content:center;
+            `;
+            const box = document.createElement('div');
+            box.style.cssText = `
+                background:var(--lda-bg); color:var(--lda-fg); border:1px solid var(--lda-border);
+                border-radius:10px; padding:16px 18px; min-width:240px; box-shadow:0 8px 24px rgba(0,0,0,0.2);
+            `;
+            box.innerHTML = `
+                <div style="font-size:13px; margin-bottom:12px;">${message}</div>
+                <div style="display:flex; gap:8px; justify-content:flex-end;">
+                    <button id="lda-confirm-cancel" style="padding:8px 12px; border:1px solid var(--lda-border); background:var(--lda-bg); border-radius:8px; cursor:pointer;">取消</button>
+                    <button id="lda-confirm-ok" style="padding:8px 12px; border:none; background:var(--lda-accent); color:#fff; border-radius:8px; cursor:pointer;">确认</button>
+                </div>
+            `;
+            mask.appendChild(box);
+            host.appendChild(mask);
+            const dispose = () => mask.remove();
+            box.querySelector('#lda-confirm-cancel').onclick = (e) => { e.stopPropagation(); dispose(); };
+            box.querySelector('#lda-confirm-ok').onclick = (e) => { e.stopPropagation(); dispose(); onOk?.(); };
+            mask.onclick = dispose;
+            box.onclick = (e) => e.stopPropagation();
         }
         
         showUpdateToast(version, url) {
