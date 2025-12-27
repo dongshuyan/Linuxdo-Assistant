@@ -1281,7 +1281,17 @@
             if (h1Match) username = h1Match[1];
             const level = levelNode.textContent.replace(/\D/g, '');
             const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
-            const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
+
+            const section = levelNode.closest('.bg-white') || levelNode.closest('.p-6') || levelNode.parentElement;
+            const tables = section ? Array.from(section.querySelectorAll('table')) : Array.from(doc.querySelectorAll('table'));
+            const rows = [];
+            tables.forEach(tbl => {
+                const trs = Array.from(tbl.querySelectorAll('tr'));
+                trs.forEach((tr, idx) => {
+                    if (idx === 0 && tr.querySelectorAll('th').length > 0) return; // skip header
+                    rows.push(tr);
+                });
+            });
             if (rows.length === 0) this.focusFlags.trust = true;
             const items = [];
             const newCache = {};
@@ -1340,7 +1350,7 @@
         }
 
         async fetchTrustWithFallback() {
-            return await this.runFallback([
+            const trust = await this.runFallback([
                 () => this.fetchTrustFromConnectGM(),
                 () => this.fetchTrustFromConnectFetch(),
                 () => this.fetchTrustFromSummaryFallback().catch(err => {
@@ -1348,6 +1358,22 @@
                     throw err;
                 })
             ], 3);
+            if (trust?.source === 'connect' && (trust.items?.length || 0) < 6) {
+                try {
+                    const uname = trust.username || await this.resolveUsername();
+                    if (uname) {
+                        const summary = await this.fetchSummary(uname);
+                        const level = summary?.user_summary?.trust_level ?? trust.level;
+                        const low = this.buildLowLevelTrust(summary, level, uname);
+                        const exist = new Set(trust.items.map(i => i.name));
+                        const merged = [...trust.items];
+                        low.items.forEach(it => { if (!exist.has(it.name)) merged.push(it); });
+                        trust.items = merged;
+                        trust.username = trust.username || uname;
+                    }
+                } catch (_) {}
+            }
+            return trust;
         }
 
         async fetchCreditViaGM() {
