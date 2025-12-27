@@ -17,6 +17,7 @@ Desktop.ini
 *~
 .*/
 .cunzhi-memory/
+temp/
 
 # Node (如果以后添加构建工具)
 node_modules/

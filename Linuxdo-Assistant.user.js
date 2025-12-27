@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      3.0.0
+// @version      4.0.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -53,11 +53,13 @@
                 days_visited: { name: '访问天数', target: 15 },
                 likes_given: { name: '送出赞', target: 1 },
                 likes_received: { name: '获赞', target: 1 },
+                post_count: { name: '帖子数量', target: 3 },
                 topics_entered: { name: '浏览的话题', target: 20 },
                 posts_read_count: { name: '已读帖子', target: 100 },
                 time_read: { name: '阅读时间', target: 3600, unit: 'seconds' } // 60分钟
             }
         },
+        CACHE_SCHEMA_VERSION: 2,
         // 保持 v4 键名以维持配置
         KEYS: {
             POS: 'lda_v4_pos',
@@ -73,6 +75,7 @@
             REFRESH_INTERVAL: 'lda_v5_refresh_interval',
             OPACITY: 'lda_v5_opacity',
             CACHE_META: 'lda_v5_cache_meta',
+            CACHE_SCHEMA: 'lda_v5_cache_schema',
             USER_SIG: 'lda_v5_user_sig',
             LAST_SKIP_UPDATE: 'lda_v5_last_skip_update',
             LAST_AUTO_CHECK: 'lda_v5_last_auto_check'
@@ -97,6 +100,13 @@
             status_ok: "已达标",
             status_fail: "未达标",
             status_fallback: "降级显示",
+            celebrate_title: "🎊 全部达标！",
+            celebrate_subtitle: "所有要求均已满足",
+            celebrate_msg_upgrade: "享受信任级别 {level} 的所有权限吧！",
+            celebrate_msg_lv3: "享受信任级别 3 的所有权限吧！",
+            btn_details: "详情",
+            btn_collapse: "收起",
+            credit_keep_cache_tip: "授权校验异常，已继续显示缓存数据",
             balance: "当前余额",
             daily_limit: "今日剩余额度",
             recent: "近7日收支",
@@ -179,6 +189,13 @@
             status_ok: "Qualified",
             status_fail: "Unqualified",
             status_fallback: "Fallback",
+            celebrate_title: "🎊 All requirements met!",
+            celebrate_subtitle: "You have met every requirement",
+            celebrate_msg_upgrade: "Enjoy all the privileges of Trust Level {level}!",
+            celebrate_msg_lv3: "Enjoy all the privileges of Trust Level 3!",
+            btn_details: "Details",
+            btn_collapse: "Collapse",
+            credit_keep_cache_tip: "Authorization check failed; showing cached data.",
             balance: "Balance",
             daily_limit: "Daily Limit",
             recent: "Recent Activity",
@@ -337,6 +354,126 @@
                 return null;
             }
         }
+        // v4-inspired: DOM-based login & username detection (used for cache/user-switch and as fallback)
+        // Return: true (logged-in) / false (guest) / null (unknown)
+        static getLoginStateByDOM() {
+            try {
+                const header = document.querySelector('.d-header') || document;
+                const hasUser = !!header.querySelector('.header-dropdown-toggle.current-user, a.current-user, .current-user');
+                if (hasUser) return true;
+
+                const els = Array.from(header.querySelectorAll('a[href], button, .btn'));
+                const hasLogin = els.some(el => {
+                    const href = (el.getAttribute('href') || '').toLowerCase();
+                    const text = (el.textContent || '').trim().toLowerCase();
+                    // 只在 header 范围内检测“登录/注册”入口（借鉴 v4：无登录/注册按钮通常意味着已登录）
+                    return href.includes('/login') || href.includes('/session')
+                        || href.includes('/signup') || href.includes('/register')
+                        || /登录|注册|log\s*in|sign\s*in|sign\s*up|register/.test(text);
+                });
+
+                if (hasLogin) return false;
+                return null;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        // 尝试多种方式获取当前用户名（参考 v4 的 getCurrentUsername）
+        static getCurrentUsernameFromDOM() {
+            try {
+                // 方法1：用户菜单头像 alt
+                const userMenuButton = document.querySelector('.header-dropdown-toggle.current-user');
+                if (userMenuButton) {
+                    const img = userMenuButton.querySelector('img');
+                    const alt = (img?.alt || '').trim();
+                    if (alt) return alt.replace(/^@/, '');
+                }
+
+                // 方法2：用户头像 title
+                const userAvatar = document.querySelector('.current-user img[title]');
+                if (userAvatar && userAvatar.title) return userAvatar.title.trim().replace(/^@/, '');
+
+                // 方法3：当前用户链接
+                const currentUserLink = document.querySelector('a.current-user, .header-dropdown-toggle.current-user a');
+                if (currentUserLink) {
+                    const href = currentUserLink.getAttribute('href');
+                    if (href && href.includes('/u/')) {
+                        const username = href.split('/u/')[1].split('/')[0];
+                        if (username) return username.trim().replace(/^@/, '');
+                    }
+                }
+
+                // 方法4：遍历页面用户链接（排除 topic 列表 / 帖子流）
+                const userLinks = document.querySelectorAll('a[href*="/u/"]');
+                for (const link of userLinks) {
+                    if (link.closest('.topic-list') || link.closest('.post-stream')) continue;
+                    const href = link.getAttribute('href');
+                    if (href && href.includes('/u/')) {
+                        const username = href.split('/u/')[1].split('/')[0];
+                        if (username) return username.trim().replace(/^@/, '');
+                    }
+                }
+
+                // 方法5：URL 在用户页
+                if (window.location.pathname.includes('/u/')) {
+                    const username = window.location.pathname.split('/u/')[1].split('/')[0];
+                    if (username) return username.trim().replace(/^@/, '');
+                }
+
+                // 方法6：localStorage（Discourse 当前用户）
+                try {
+                    const discourseData = localStorage.getItem('discourse_current_user');
+                    if (discourseData) {
+                        const userData = JSON.parse(discourseData);
+                        if (userData?.username) return String(userData.username).trim().replace(/^@/, '');
+                    }
+                } catch (_) { /* ignore */ }
+
+                return null;
+            } catch (_) {
+                return null;
+            }
+        }
+
+        // 从 connect.linux.do 的欢迎语中解析“用户名 + 当前等级”（参考 v4 逻辑）
+        static async fetchConnectWelcome() {
+            const html = await Utils.request(CONFIG.API.TRUST, { timeout: 15000, retries: 2 });
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const bodyText = doc.body?.textContent || '';
+            const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
+            if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) {
+                const err = new Error('NeedLogin');
+                err.code = 'NeedLogin';
+                throw err;
+            }
+
+            const h1 = doc.querySelector('h1');
+            const h1Text = (h1?.textContent || '').trim();
+
+            let username = null;
+            let level = null;
+
+            // 例如: "你好，一剑万生 (YY_WD) 2级用户"
+            let m = h1Text.match(/你好，\s*([^\(\s]*)\s*\(?([^)]*)\)?\s*(\d+)\s*级用户/i);
+            if (m) {
+                username = (m[2] || m[1] || '').trim();
+                level = (m[3] || '').trim();
+            }
+
+            // 英文兜底（不严格）
+            if (!level) {
+                const m2 = h1Text.match(/trust\s*level\s*(\d+)/i) || h1Text.match(/(\d+)\s*(?:level|lvl)/i);
+                if (m2) level = (m2[1] || '').trim();
+            }
+
+            if (username) username = username.replace(/^@/, '');
+            const trustLevel = level !== null && level !== '' && !Number.isNaN(Number(level)) ? Number(level) : null;
+
+            if (!username && trustLevel === null) return null;
+            return { username, trustLevel };
+        }
+
 
         // 获取用户信息（含信任等级）- 使用同源请求更稳定
         static async fetchUserInfo(username) {
@@ -827,6 +964,49 @@
             color: var(--lda-dim);
             margin-left: 8px;
         }
+    
+        /* === Celebration (all requirements met) === */
+        @keyframes lda-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        .lda-celebration-wrap { display: flex; flex-direction: column; gap: 12px; }
+        .lda-celebration-achievement {
+            display: flex; flex-direction: column; align-items: center; text-align: center;
+            padding: 16px 12px;
+            border: var(--lda-border);
+            border-radius: var(--lda-rad);
+            background: linear-gradient(135deg, rgba(59,130,246,0.12), rgba(34,197,94,0.10));
+            position: relative;
+            overflow: hidden;
+        }
+        .lda-celebration-icon {
+            position: relative;
+            width: 56px; height: 56px;
+            border-radius: 18px;
+            display: flex; align-items: center; justify-content: center;
+            background: var(--lda-accent);
+            box-shadow: 0 12px 30px -10px rgba(0,0,0,0.25);
+        }
+        .lda-celebration-ring {
+            position: absolute;
+            inset: -10px;
+            border-radius: 999px;
+            border: 2px solid rgba(255,255,255,0.35);
+            animation: lda-spin 2.2s linear infinite;
+        }
+        .lda-celebration-ring-outer {
+            position: absolute;
+            inset: -18px;
+            border-radius: 999px;
+            border: 2px solid rgba(255,255,255,0.18);
+            animation: lda-spin 3.8s linear infinite reverse;
+        }
+        .lda-celebration-title { font-weight: 900; font-size: 16px; margin-top: 10px; color: var(--lda-fg); }
+        .lda-celebration-subtitle { font-size: 12px; color: var(--lda-dim); margin-top: 4px; }
+        .lda-celebration-message { font-size: 12px; color: var(--lda-fg); margin-top: 10px; line-height: 1.5; }
+        .lda-celebration-actions { display: flex; justify-content: center; }
+        .lda-celebration-actions button { min-width: 88px; }
+        .lda-celebration-details { display: none; flex-direction: column; gap: 10px; }
+        .lda-celebration-scroll { max-height: 300px; overflow-y: auto; padding-right: 6px; }
+
     `;
 
     // 主程序
@@ -851,6 +1031,7 @@
             this.lastAutoCheck = Utils.get(CONFIG.KEYS.LAST_AUTO_CHECK, 0);
             this.focusFlags = { trust: false, credit: false, cdk: false };
             this.autoRefreshTimer = null;
+            this.userWatchTimer = null; // 账号切换/退出检测计时器
             this.cdkBridgeInit = false;
             this.cdkBridgeFrame = null;
             this.cdkWaiters = [];
@@ -866,6 +1047,10 @@
             this.refreshStartTime = { trust: 0, credit: 0, cdk: 0 };
             this.refreshStopPending = { trust: false, credit: false, cdk: false }; // 是否正在等待延迟停止
             this.dom = {};
+
+            // 存储/缓存格式校验（避免旧版本残留导致错误状态）
+            this.ensureStorageSchema();
+            this.validateLoadedCache();
         }
 
         async init(forceOpen = false) {
@@ -876,6 +1061,7 @@
             GM_addStyle(Styles);
             this.renderLayout();
             this.bindGlobalEvents();
+            this.startUserWatcher();
             this.applyTheme();
             this.applyHeight();
             this.applyOpacity();
@@ -1340,16 +1526,9 @@
         }
 
         ensureUserSig(sig) {
-            if (!sig) return;
-            if (this.userSig && this.userSig !== sig) {
-                const isCompat = (a, b) => {
-                    const ua = a.startsWith('uname:');
-                    const ub = b.startsWith('uname:');
-                    const ia = a.startsWith('uid:');
-                    const ib = b.startsWith('uid:');
-                    return (ua && ib) || (ia && ub);
-                };
-                if (!isCompat(this.userSig, sig)) {
+            if (!sig) {
+                // 退出登录或无法识别用户：清空与账号相关的缓存，避免“旧账号数据残留”
+                if (this.userSig) {
                     this.trustData = null;
                     this.creditData = null;
                     this.cdkCache = null;
@@ -1361,9 +1540,119 @@
                     Utils.set(CONFIG.KEYS.CACHE_CDK, null);
                     Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
                 }
+                this.userSig = null;
+                Utils.set(CONFIG.KEYS.USER_SIG, null);
+                return;
+            }
+            if (this.userSig && this.userSig !== sig) {
+                // 账号切换：清空与账号相关的缓存（参考 v4 策略）
+                this.trustData = null;
+                this.creditData = null;
+                this.cdkCache = null;
+                this.state.trustCache = {};
+                this.lastFetch = { trust: 0, credit: 0, cdk: 0 };
+                Utils.set(CONFIG.KEYS.CACHE_TRUST, {});
+                Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, null);
+                Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+                Utils.set(CONFIG.KEYS.CACHE_CDK, null);
+                Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
             }
             this.userSig = sig;
             Utils.set(CONFIG.KEYS.USER_SIG, sig);
+        }
+
+
+        ensureStorageSchema() {
+            const ver = Utils.get(CONFIG.KEYS.CACHE_SCHEMA, 0);
+            if (ver !== CONFIG.CACHE_SCHEMA_VERSION) {
+                // 缓存结构变更/旧版本残留：仅清空“数据缓存”，保留用户设置（主题、位置等）
+                this.trustData = null;
+                this.creditData = null;
+                this.cdkCache = null;
+                this.state.trustCache = {};
+                this.lastFetch = { trust: 0, credit: 0, cdk: 0 };
+                Utils.set(CONFIG.KEYS.CACHE_TRUST, {});
+                Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, null);
+                Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+                Utils.set(CONFIG.KEYS.CACHE_CDK, null);
+                Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+                Utils.set(CONFIG.KEYS.CACHE_SCHEMA, CONFIG.CACHE_SCHEMA_VERSION);
+            }
+        }
+
+        validateLoadedCache() {
+            // lastFetch 兜底
+            if (!this.lastFetch || typeof this.lastFetch !== 'object') {
+                this.lastFetch = { trust: 0, credit: 0, cdk: 0 };
+            } else {
+                ['trust', 'credit', 'cdk'].forEach(k => {
+                    if (!Number.isFinite(this.lastFetch[k])) this.lastFetch[k] = 0;
+                });
+            }
+
+            // trustData 结构校验
+            const basic = this.trustData?.basic;
+            const trustOk = !!(basic && basic.level !== undefined && Array.isArray(basic.items));
+            if (!trustOk) {
+                this.trustData = null;
+                this.lastFetch.trust = 0;
+                Utils.set(CONFIG.KEYS.CACHE_TRUST_DATA, null);
+            }
+
+            // creditData 结构校验（避免旧缓存导致“尚未登录/需授权”误判）
+            const info = this.creditData?.info;
+            const creditOk = !!(info && info.available_balance !== undefined && info.remain_quota !== undefined);
+            if (!creditOk) {
+                this.creditData = null;
+                this.lastFetch.credit = 0;
+                Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+            }
+
+            // cdkCache 结构校验（兼容旧缓存直接存 data 的情况）
+            const cdkOk = !!(this.cdkCache && typeof this.cdkCache === 'object' && this.cdkCache.data && Number.isFinite(this.cdkCache.ts));
+            if (!cdkOk) {
+                if (this.cdkCache && typeof this.cdkCache === 'object' && !('data' in this.cdkCache) && !('ts' in this.cdkCache)) {
+                    this.cdkCache = { ts: 0, data: this.cdkCache };
+                    Utils.set(CONFIG.KEYS.CACHE_CDK, this.cdkCache);
+                } else {
+                    this.cdkCache = null;
+                    this.lastFetch.cdk = 0;
+                    Utils.set(CONFIG.KEYS.CACHE_CDK, null);
+                }
+            }
+
+            Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+        }
+
+
+        startUserWatcher() {
+            // 借鉴 v4：每 5 秒检查一次账号是否切换/退出，用于缓存失效与 UI 更新
+            if (this.userWatchTimer) return;
+            if (location.host !== 'linux.do') return;
+
+            const tick = () => {
+                const username = Utils.getCurrentUsernameFromDOM() || Utils.getCurrentUsername();
+                const loginState = Utils.getLoginStateByDOM();
+
+                if (username) {
+                    const sig = this.makeUserSig({ username });
+                    if (sig && this.userSig !== sig) {
+                        this.ensureUserSig(sig);
+                        // 账号切换后：立刻刷新缓存与 UI（面板开着时体验更好）
+                        this.renderFromCacheAll();
+                        this.prewarmAll();
+                    }
+                } else if (loginState === false) {
+                    // 已明确退出登录
+                    if (this.userSig) {
+                        this.ensureUserSig(null);
+                        this.renderFromCacheAll();
+                    }
+                }
+            };
+
+            tick();
+            this.userWatchTimer = setInterval(tick, 5000);
         }
 
         isExpired(type) {
@@ -1717,34 +2006,94 @@
                 }
                 if (this.trustData) this.renderTrust(this.trustData);
 
-                // ✅ 1) session/current.json：权威登录判定
+                // ✅ 1) 登录态 / 用户名 / 当前等级 获取（多策略兜底：session → connect → DOM）
                 const sessionUser = await Utils.fetchSessionUser();
-                if (!sessionUser?.username) {
+
+                let username = sessionUser?.username
+                    || Utils.getCurrentUsername()
+                    || Utils.getCurrentUsernameFromDOM();
+
+                let userTrustLevel = Number.isFinite(sessionUser?.trust_level) ? sessionUser.trust_level : null;
+
+                // 兜底：从 connect.linux.do 欢迎语解析（参考 v4）
+                if (!username || userTrustLevel === null) {
+                    try {
+                        const cw = await Utils.fetchConnectWelcome();
+                        if (!username && cw?.username) username = cw.username;
+                        if (userTrustLevel === null && cw?.trustLevel !== null && cw?.trustLevel !== undefined) userTrustLevel = cw.trustLevel;
+                    } catch (_) {
+                        // ignore（NeedLogin / parse error 将在下面处理）
+                    }
+                }
+
+                // ✅ 未能拿到用户名：更谨慎的登录判断（session 不可用时，使用 DOM 是否存在“登录/注册”入口作为辅助）
+                if (!username) {
+                    const domState = Utils.getLoginStateByDOM();
+                    if (domState === false) {
+                        this.focusFlags.trust = true;
+                        wrap.innerHTML = `
+          <div class="lda-card lda-auth-card">
+            <div class="lda-auth-top">
+              <div class="lda-auth-icon">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Z" fill="currentColor" opacity=".15"/>
+                  <path d="M12 2.2 20 5.8v5.2c0 4.95-3.33 9.58-8 10.86C7.33 20.58 4 15.95 4 11V5.8l8-3.6Z" stroke="currentColor" stroke-width="1.2"/>
+                  <path d="M9.4 12.4 11 14l3.6-3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div>
+                <div style="font-weight:800">${this.t('trust')}</div>
+                <div style="font-size:12px;color:var(--lda-dim);margin-top:2px;line-height:1.5">${this.t('trust_login_tip')}</div>
+              </div>
+            </div>
+            <div class="lda-auth-actions">
+              <button class="lda-auth-btn primary" id="btn-go-login">${this.t('trust_go_login')}</button>
+              <button class="lda-auth-btn secondary" id="btn-retry-trust">${this.t('refresh')}</button>
+            </div>
+          </div>`;
+                        const btn = Utils.el('#btn-go-login', wrap);
+                        if (btn) btn.onclick = () => location.href = '/login';
+                        const retry = Utils.el('#btn-retry-trust', wrap);
+                        if (retry) retry.onclick = (e) => { e.stopPropagation(); this.refreshTrust(true); };
+                        this.stopRefreshWithMinDuration('trust');
+                        endWait();
+                        return;
+                    }
+
+                    // DOM 无法确认：仍给出“刷新/前往登录”的入口
                     this.focusFlags.trust = true;
                     wrap.innerHTML = `
-                        <div class="lda-card lda-auth-card">
-                            <div class="lda-auth-icon">
-                                <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5L12 1m0 4a3 3 0 0 1 3 3 3 3 0 0 1-3 3 3 3 0 0 1-3-3 3 3 0 0 1 3-3m5.13 12c-1.21 1.85-3.02 3.24-5.13 3.92-2.11-.68-3.92-2.07-5.13-3.92-.34-.5-.63-1-.87-1.53 0-1.65 2.71-3 6-3s6 1.32 6 3c-.24.53-.53 1.03-.87 1.53Z"/></svg>
-                            </div>
-                            <div class="lda-auth-title">${this.t('trust_not_login')}</div>
-                            <div class="lda-auth-tip">${this.t('trust_login_tip')}</div>
-                            <div class="lda-auth-btns">
-                                <a href="${CONFIG.API.LINK_LOGIN}" target="_blank" class="lda-auth-btn" id="btn-go-login">${this.t('trust_go_login')} →</a>
-                                <button id="btn-trust-refresh" class="lda-auth-btn secondary">${this.t('credit_refresh')}</button>
-                            </div>
-                        </div>
-                    `;
-                    Utils.el('#btn-trust-refresh', wrap).onclick = (ev) => { ev.stopPropagation(); this.refreshTrust({ manual: true, force: true }); };
-                    const goLogin = Utils.el('#btn-go-login', wrap);
-                    if (goLogin) goLogin.onclick = () => { this.focusFlags.trust = true; };
+          <div class="lda-card lda-auth-card">
+            <div class="lda-auth-top">
+              <div class="lda-auth-icon">
+                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Z" fill="currentColor" opacity=".15"/>
+                  <path d="M12 2.2 20 5.8v5.2c0 4.95-3.33 9.58-8 10.86C7.33 20.58 4 15.95 4 11V5.8l8-3.6Z" stroke="currentColor" stroke-width="1.2"/>
+                  <path d="M9.4 12.4 11 14l3.6-3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </div>
+              <div>
+                <div style="font-weight:800">${this.t('trust')}</div>
+                <div style="font-size:12px;color:var(--lda-dim);margin-top:2px;line-height:1.5">
+                  ${this.t('trust_login_tip')}
+                </div>
+              </div>
+            </div>
+            <div class="lda-auth-actions">
+              <button class="lda-auth-btn primary" id="btn-go-login">${this.t('trust_go_login')}</button>
+              <button class="lda-auth-btn secondary" id="btn-retry-trust">${this.t('refresh')}</button>
+            </div>
+          </div>`;
+                    const btn = Utils.el('#btn-go-login', wrap);
+                    if (btn) btn.onclick = () => location.href = '/login';
+                    const retry = Utils.el('#btn-retry-trust', wrap);
+                    if (retry) retry.onclick = (e) => { e.stopPropagation(); this.refreshTrust(true); };
                     this.stopRefreshWithMinDuration('trust');
                     endWait();
                     return;
                 }
 
                 // ✅ 2) 已登录：拿 username + trust_level
-                const username = sessionUser.username || Utils.getCurrentUsername();
-                let userTrustLevel = Number.isFinite(sessionUser.trust_level) ? sessionUser.trust_level : null;
                 if (userTrustLevel === null && username) {
                     const ui = await Utils.fetchUserInfo(username);
                     userTrustLevel = ui?.trust_level ?? null;
@@ -1911,6 +2260,45 @@
                 `;
             });
 
+
+            const isCelebration = (isPass === true) && !isFallback && (items || []).length > 0;
+
+            let bodyHtml = listHtml;
+            if (isCelebration) {
+                const lvlNum = Number(level);
+                const target = (Number.isFinite(lvlNum) ? String(lvlNum >= 3 ? 3 : (lvlNum + 1)) : '3');
+                const msg = (Number.isFinite(lvlNum) && lvlNum >= 3)
+                    ? this.t('celebrate_msg_lv3')
+                    : this.t('celebrate_msg_upgrade').replace('{level}', target);
+
+                bodyHtml = Utils.html`
+                    <div class="lda-celebration-wrap">
+                        <div class="lda-celebration-achievement">
+                            <div class="lda-celebration-icon">
+                                <div class="lda-celebration-ring"></div>
+                                <div class="lda-celebration-ring-outer"></div>
+                                <svg viewBox="0 0 24 24" width="24" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                    <path d="M7 4h10v2h2a1 1 0 0 1 1 1v2a5 5 0 0 1-5 5h-1.1A5.002 5.002 0 0 1 13 16.9V19h3v2H8v-2h3v-2.1A5.002 5.002 0 0 1 10.1 14H9A5 5 0 0 1 4 9V7a1 1 0 0 1 1-1h2V4Zm12 3h-2v5h1a3 3 0 0 0 3-3V7ZM7 7H5v2a3 3 0 0 0 3 3h1V7Zm2-3v8a3 3 0 0 0 3 3 3 3 0 0 0 3-3V4H9Z" fill="white"/>
+                                </svg>
+                            </div>
+                            <div class="lda-celebration-title">${this.t('celebrate_title')}</div>
+                            <div class="lda-celebration-subtitle">${this.t('celebrate_subtitle')}</div>
+                            <div class="lda-celebration-message">${msg}</div>
+                        </div>
+
+                        <div class="lda-celebration-details">
+                            <div class="lda-celebration-scroll">
+                                ${bodyHtml}
+                            </div>
+                        </div>
+
+                        <div class="lda-celebration-actions">
+                            <button class="lda-auth-btn secondary" id="btn-trust-toggle-details">${this.t('btn_details')}</button>
+                        </div>
+                    </div>
+                `;
+            }
+
             const bannerHtml = isFallback ? this.getFallbackBannerHtml() : '';
             const sourceTag = this.getSourceTagHtml(source || 'connect');
 
@@ -1938,7 +2326,7 @@
                     </div>
                     ${bannerHtml}
                     ${statsHtml}
-                    ${listHtml}
+                    ${bodyHtml}
                     ${fallbackBtns}
                 </div>
             `;
@@ -1960,6 +2348,28 @@
                 e.stopPropagation();
                 this.refreshTrust({ manual: true, force: true });
             };
+
+            const toggle = Utils.el('#btn-trust-toggle-details', wrap);
+            if (toggle) {
+                toggle.onclick = (e) => {
+                    e.stopPropagation();
+                    const ach = Utils.el('.lda-celebration-achievement', wrap);
+                    const det = Utils.el('.lda-celebration-details', wrap);
+                    if (!ach || !det) return;
+
+                    const detHidden = getComputedStyle(det).display === 'none';
+                    if (detHidden) {
+                        ach.style.display = 'none';
+                        det.style.display = 'flex';
+                        toggle.textContent = this.t('btn_collapse');
+                    } else {
+                        det.style.display = 'none';
+                        ach.style.display = 'flex';
+                        toggle.textContent = this.t('btn_details');
+                    }
+                };
+            }
+
 
             // 如果正在刷新或等待延迟停止，保持按钮旋转状态
             if (this.refreshingPages.trust || this.refreshStopPending.trust) {
@@ -2021,6 +2431,17 @@
                 const isLogin = e?.status === 401 || e?.status === 403 || /unauthorized|not\s*login/i.test(e?.responseText || '');
 
                 if (isLogin) {
+                    // 如果已有可用缓存数据：不要强行覆盖成“未登录/需授权”，避免偶发 401 造成闪烁
+                    const hasUsableCache = !!(this.creditData?.info && this.creditData.info.available_balance !== undefined);
+                    if (hasUsableCache) {
+                        this.focusFlags.credit = true;
+                        this.showToast(this.t('credit_keep_cache_tip'));
+                        try { this.renderCredit(this.creditData); } catch (_) { /* ignore */ }
+                        this.stopRefreshWithMinDuration('credit');
+                        endWait();
+                        return;
+                    }
+
                     this.stopRefreshWithMinDuration('credit');
                     this.focusFlags.credit = true;
                     wrap.innerHTML = `
