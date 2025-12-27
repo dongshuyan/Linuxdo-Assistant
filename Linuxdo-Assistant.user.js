@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.0.0
+// @version      4.1.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -1917,13 +1917,13 @@
             }
 
             const level = knownLevel !== null ? String(knownLevel) : levelNode.textContent.replace(/\D/g, '');
-            const isPass = levelNode?.parentElement?.querySelector?.('.text-green-500') !== null;
             const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
             if (rows.length === 0) this.focusFlags.trust = true;
 
             const items = [];
             const newCache = {};
             const seenNames = {};
+            let allPassed = true;
 
             rows.forEach(tr => {
                 const tds = tr.querySelectorAll('td');
@@ -1933,6 +1933,8 @@
                 const current = parseFloat(tds[1].textContent.replace(/,/g, ''));
                 const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
                 const isGood = tds[1].classList.contains('text-green-500');
+
+                if (!isGood) allPassed = false;
 
                 if (seenNames[name]) {
                     name = name + ' (All)';
@@ -1956,6 +1958,9 @@
 
             this.state.trustCache = newCache;
             Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+
+            // 只有当存在数据行且所有项目都达标时，isPass 才为 true
+            const isPass = items.length > 0 && allPassed;
 
             return { level, isPass, items, source: 'connect' };
         }
