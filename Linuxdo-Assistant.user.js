@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      2.0.0
+// @version      2.1.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -267,21 +267,22 @@
                     fetchJson(CONFIG.API.LEADERBOARD_DAILY),
                     fetchJson(CONFIG.API.LEADERBOARD)
                 ]);
-                // 尝试从 leaderboard 获取积分
                 let score = global?.personal?.total_score || global?.personal?.score || null;
-                // 如果没有积分，尝试从用户 API 获取
+                let username = global?.personal?.user?.username || daily?.personal?.user?.username || null;
                 if (!score && global?.personal?.user?.username) {
-                    const username = global.personal.user.username;
-                    const userInfo = await fetchJson(`${baseUrl}/u/${username}.json`);
+                    const uname = global.personal.user.username;
+                    const userInfo = await fetchJson(`${baseUrl}/u/${uname}.json`);
                     score = userInfo?.user?.gamification_score || null;
+                    username = username || userInfo?.user?.username || null;
                 }
                 return {
                     dailyRank: daily?.personal?.position || null,
                     globalRank: global?.personal?.position || null,
-                    score: score
+                    score: score,
+                    username
                 };
             } catch (e) {
-                return { dailyRank: null, globalRank: null, score: null };
+                return { dailyRank: null, globalRank: null, score: null, username: null };
             }
         }
     }
@@ -699,7 +700,7 @@
             this.restorePos();
             this.updatePanelSide();
             this.renderFromCacheAll();
-            this.prewarmAll(true);
+            this.prewarmAll();
             this.startAutoRefreshTimer();
             this.maybeAutoCheckUpdate();
             
@@ -1042,7 +1043,7 @@
                 }
                 if (e.target.id === 'btn-clear-cache') {
                     this.showConfirm(this.t('clear_cache_tip'), () => {
-                        this.clearAllCaches(false);
+                        this.clearAllCaches(false, true);
                         this.showToast(this.t('clear_cache_done'), 'success');
                     });
                 }
@@ -1088,10 +1089,10 @@
             if (this.cdkCache?.data) this.renderCDKContent(this.cdkCache.data);
         }
 
-        prewarmAll(force = false) {
-            this.refreshTrust({ background: true, force });
-            this.refreshCredit({ background: true, force });
-            this.refreshCDK({ background: true, force });
+        prewarmAll() {
+            if (!this.trustData) this.refreshTrust({ background: true, force: false });
+            if (!this.creditData) this.refreshCredit({ background: true, force: false });
+            if (!this.cdkCache?.data) this.refreshCDK({ background: true, force: false });
         }
 
         isPageActive(page) {
@@ -1162,21 +1163,261 @@
 
         makeUserSig(info) {
             if (!info) return null;
-            if (info.user_id || info.id) return `uid:${info.user_id || info.id}`;
             if (info.username) return `uname:${info.username}`;
+            if (info.user?.username) return `uname:${info.user.username}`;
+            if (info.user_id || info.id) return `uid:${info.user_id || info.id}`;
             return null;
+        }
+
+        async runFallback(tasks = [], maxAttempts = 3) {
+            let lastErr = null;
+            let attempts = 0;
+            for (const task of tasks) {
+                if (attempts >= maxAttempts) break;
+                attempts += 1;
+                try {
+                    const res = await task();
+                    return res;
+                } catch (err) {
+                    lastErr = err;
+                }
+            }
+            throw lastErr || new Error('all methods failed');
+        }
+
+        async resolveUsername() {
+            if (this.userSig?.startsWith('uname:')) return this.userSig.slice('uname:'.length);
+            if (this.trustData?.basic?.username) return this.trustData.basic.username;
+            const cachedTrust = Utils.get(CONFIG.KEYS.CACHE_TRUST_DATA, null);
+            if (cachedTrust?.basic?.username) return cachedTrust.basic.username;
+            if (this.creditData?.info?.username) return this.creditData.info.username;
+            if (this.cdkCache?.data?.username) return this.cdkCache.data.username;
+            try {
+                const stats = await Utils.fetchForumStats();
+                if (stats?.username) {
+                    const sig = this.makeUserSig({ username: stats.username });
+                    if (sig) this.ensureUserSig(sig);
+                    return stats.username;
+                }
+            } catch (_) {}
+            return null;
+        }
+
+        async fetchSummary(username) {
+            const url = `${window.location.origin}/u/${encodeURIComponent(username)}/summary.json`;
+            const r = await fetch(url, { credentials: 'include' });
+            if (!r.ok) throw new Error(`summary http ${r.status}`);
+            return await r.json();
+        }
+
+        async fetchUserJson(username) {
+            const url = `${window.location.origin}/u/${encodeURIComponent(username)}.json`;
+            const r = await fetch(url, { credentials: 'include' });
+            if (!r.ok) throw new Error(`user http ${r.status}`);
+            return await r.json();
+        }
+
+        getLowLevelRequirements(level) {
+            if (level <= 0) {
+                return {
+                    topics_entered: 5,
+                    posts_read_count: 30,
+                    time_read: 600
+                };
+            }
+            return {
+                days_visited: 15,
+                likes_given: 1,
+                likes_received: 1,
+                replies_to_different_topics: 3,
+                topics_entered: 20,
+                posts_read_count: 100,
+                time_read: 3600
+            };
+        }
+
+        buildLowLevelTrust(summary, level, username = null) {
+            const userSummary = summary?.user_summary || {};
+            const req = this.getLowLevelRequirements(level);
+            const items = [];
+            const pushItem = (name, current, target) => {
+                const pct = target > 0 ? Math.min((current / target) * 100, 100) : 0;
+                items.push({
+                    name,
+                    current: String(current),
+                    target,
+                    isGood: current >= target,
+                    pct,
+                    diff: 0
+                });
+            };
+            if (req.topics_entered !== undefined) pushItem('浏览的话题', userSummary.topics_entered || 0, req.topics_entered);
+            if (req.posts_read_count !== undefined) pushItem('已读帖子', userSummary.posts_read_count || 0, req.posts_read_count);
+            if (req.time_read !== undefined) pushItem('阅读时间(秒)', userSummary.time_read || 0, req.time_read);
+            if (req.days_visited !== undefined) pushItem('访问天数', userSummary.days_visited || 0, req.days_visited);
+            if (req.likes_given !== undefined) pushItem('给出的赞', userSummary.likes_given || 0, req.likes_given);
+            if (req.likes_received !== undefined) pushItem('收到的赞', userSummary.likes_received || 0, req.likes_received);
+            if (req.replies_to_different_topics !== undefined) {
+                const repliesCount = userSummary.replies_count || userSummary.posts_read_count || 0;
+                pushItem('回复的话题(估计)', repliesCount, req.replies_to_different_topics);
+            }
+            const isPass = items.every(it => it.isGood);
+            return { level, isPass, items, source: 'summary', username };
+        }
+
+        parseTrustFromConnect(html) {
+            const doc = new DOMParser().parseFromString(html, 'text/html');
+            const bodyText = doc.body?.textContent || '';
+            const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
+            const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
+            if (!levelNode) {
+                const possibleTable = doc.querySelector('table');
+                if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
+                if (!possibleTable) throw new Error("ParseError");
+            }
+            const h1 = doc.querySelector('h1');
+            let username = null;
+            const h1Match = h1?.textContent?.match(/你好，\s*([^\s(]+)\s*/);
+            if (h1Match) username = h1Match[1];
+            const level = levelNode.textContent.replace(/\D/g, '');
+            const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
+            const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
+            if (rows.length === 0) this.focusFlags.trust = true;
+            const items = [];
+            const newCache = {};
+            const seenNames = {};
+            rows.forEach(tr => {
+                const tds = tr.querySelectorAll('td');
+                if (tds.length < 3) return;
+                let name = tds[0].textContent.trim().split('（')[0];
+                const current = parseFloat(tds[1].textContent.replace(/,/g, ''));
+                const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
+                const isGood = tds[1].classList.contains('text-green-500');
+                if (seenNames[name]) name = name + ' (All)';
+                seenNames[name] = true;
+                const oldVal = this.state.trustCache[name];
+                let diff = 0;
+                if (typeof oldVal === 'number' && oldVal !== current) diff = current - oldVal;
+                newCache[name] = current;
+                let pct = 0;
+                if (target > 0) pct = Math.min((current / target) * 100, 100);
+                else if (isGood) pct = 100;
+                items.push({ name, current: tds[1].textContent.trim(), target, isGood, pct, diff });
+            });
+            this.state.trustCache = newCache;
+            Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
+            return { level, isPass, items, source: 'connect', username };
+        }
+
+        async fetchTrustFromConnectGM() {
+            const html = await Utils.request(CONFIG.API.TRUST);
+            return this.parseTrustFromConnect(html);
+        }
+
+        async fetchTrustFromConnectFetch() {
+            const r = await fetch(CONFIG.API.TRUST, { credentials: 'include' });
+            if (!r.ok) throw new Error(`http ${r.status}`);
+            const html = await r.text();
+            return this.parseTrustFromConnect(html);
+        }
+
+        async fetchTrustFromSummaryFallback() {
+            const username = await this.resolveUsername();
+            if (!username) throw new Error('no-username');
+            const summary = await this.fetchSummary(username);
+            const level = summary?.user_summary?.trust_level ?? summary?.user?.trust_level ?? 0;
+            if (level >= 2) throw new Error('need-connect');
+            return this.buildLowLevelTrust(summary, level, username);
+        }
+
+        async fetchTrustFromUserJsonFallback() {
+            const username = await this.resolveUsername();
+            if (!username) throw new Error('no-username');
+            const userInfo = await this.fetchUserJson(username);
+            const level = userInfo?.user?.trust_level ?? userInfo?.trust_level;
+            if (level === undefined || level === null) throw new Error('no-level');
+            return { level, isPass: false, items: [], source: 'user.json', username };
+        }
+
+        async fetchTrustWithFallback() {
+            return await this.runFallback([
+                () => this.fetchTrustFromConnectGM(),
+                () => this.fetchTrustFromConnectFetch(),
+                () => this.fetchTrustFromSummaryFallback().catch(err => {
+                    if (err?.message === 'need-connect') return this.fetchTrustFromUserJsonFallback();
+                    throw err;
+                })
+            ], 3);
+        }
+
+        async fetchCreditViaGM() {
+            const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true });
+            const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true });
+            let info = null;
+            let stats = [];
+            await Promise.all([
+                infoPromise.then(r => {
+                    info = JSON.parse(r).data;
+                    const sig = this.makeUserSig(info);
+                    if (sig) this.ensureUserSig(sig);
+                }),
+                statPromise.then(r => {
+                    stats = JSON.parse(r).data || [];
+                })
+            ]);
+            return { info, stats, source: 'gm' };
+        }
+
+        async fetchCreditViaFetch() {
+            const fetchJson = async (url) => {
+                const r = await fetch(url, { credentials: 'include' });
+                if (!r.ok) throw new Error(`http ${r.status}`);
+                return await r.json();
+            };
+            const [infoRes, statsRes] = await Promise.all([
+                fetchJson(CONFIG.API.CREDIT_INFO),
+                fetchJson(CONFIG.API.CREDIT_STATS)
+            ]);
+            const info = infoRes.data;
+            const stats = statsRes.data || [];
+            const sig = this.makeUserSig(info);
+            if (sig) this.ensureUserSig(sig);
+            return { info, stats, source: 'fetch' };
+        }
+
+        async fetchCreditFromCache() {
+            const cached = Utils.get(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+            if (!cached?.info) throw new Error('no-cache');
+            return { ...cached, source: 'cache', fromCache: true };
+        }
+
+        async fetchCreditWithFallback() {
+            return await this.runFallback([
+                () => this.fetchCreditViaGM(),
+                () => this.fetchCreditViaFetch(),
+                () => this.fetchCreditFromCache()
+            ], 3);
         }
 
         ensureUserSig(sig) {
             if (!sig) return;
             if (this.userSig && this.userSig !== sig) {
-                this.clearAllCaches(false);
+                const compat = (a, b) => {
+                    const ua = a.startsWith('uname:');
+                    const ub = b.startsWith('uname:');
+                    const ia = a.startsWith('uid:');
+                    const ib = b.startsWith('uid:');
+                    return (ua && ib) || (ia && ub);
+                };
+                if (!compat(this.userSig, sig)) {
+                    this.clearAllCaches(false);
+                }
             }
             this.userSig = sig;
             Utils.set(CONFIG.KEYS.USER_SIG, sig);
         }
 
-        clearAllCaches(showToast = true) {
+        clearAllCaches(showToast = true, refetch = false) {
             this.trustData = null;
             this.creditData = null;
             this.cdkCache = null;
@@ -1193,6 +1434,7 @@
             if (this.dom.trust) this.dom.trust.innerHTML = '';
             if (this.dom.credit) this.dom.credit.innerHTML = '';
             if (this.dom.cdk) this.dom.cdk.innerHTML = '';
+            if (refetch) this.prewarmAll();
         }
 
         isExpired(type) {
@@ -1233,67 +1475,16 @@
                 }
                 if (this.trustData) this.renderTrust(this.trustData);
 
-                const trustPromise = Utils.request(CONFIG.API.TRUST);
                 const statsPromise = Utils.fetchForumStats();
-
-                const trustData = await trustPromise.then(html => {
-                const doc = new DOMParser().parseFromString(html, 'text/html');
-                const bodyText = doc.body?.textContent || '';
-                const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
-                const levelNode = Array.from(doc.querySelectorAll('h1, h2, h3')).find(x => /信任|trust/i.test(x.textContent));
-                if (!levelNode) {
-                    const possibleTable = doc.querySelector('table');
-                    if (loginHint || /登录|login|sign\s*in/i.test(bodyText)) throw new Error("NeedLogin");
-                    if (!possibleTable) throw new Error("ParseError");
+                const trustData = await this.fetchTrustWithFallback();
+                if (trustData?.username) {
+                    const sig = this.makeUserSig({ username: trustData.username });
+                    if (sig) this.ensureUserSig(sig);
                 }
-
-                    const level = levelNode.textContent.replace(/\D/g, '');
-                    const isPass = levelNode.parentElement.querySelector('.text-green-500') !== null;
-                    const rows = Array.from(levelNode.parentElement.parentElement.querySelectorAll('tr')).slice(1);
-                    if (rows.length === 0) this.focusFlags.trust = true;
-                    
-                    const items = [];
-                    const newCache = {}; 
-                    const seenNames = {}; 
-
-                    rows.forEach(tr => {
-                        const tds = tr.querySelectorAll('td');
-                        if (tds.length < 3) return;
-                        
-                        let name = tds[0].textContent.trim().split('（')[0];
-                        const current = parseFloat(tds[1].textContent.replace(/,/g, '')); 
-                        const target = parseFloat(tds[2].textContent.replace(/,/g, ''));
-                        const isGood = tds[1].classList.contains('text-green-500');
-                        
-                        if (seenNames[name]) {
-                            name = name + ' (All)';
-                        }
-                        seenNames[name] = true;
-
-                        const oldVal = this.state.trustCache[name];
-                        let diff = 0;
-                        if (typeof oldVal === 'number' && oldVal !== current) {
-                            diff = current - oldVal;
-                        }
-
-                        newCache[name] = current;
-                        
-                        let pct = 0;
-                        if (target > 0) pct = Math.min((current/target)*100, 100);
-                        else if (isGood) pct = 100;
-
-                        items.push({ name, current: tds[1].textContent.trim(), target, isGood, pct, diff });
-                    });
-
-                    this.state.trustCache = newCache;
-                    Utils.set(CONFIG.KEYS.CACHE_TRUST, newCache);
-
-                    return { level, isPass, items };
-                });
-
                 const statsData = await statsPromise.then(forumStats => {
-                    if (forumStats?.personal?.user?.username) {
-                        this.ensureUserSig(this.makeUserSig({ username: forumStats.personal.user.username }));
+                    if (forumStats?.username) {
+                        const sig = this.makeUserSig({ username: forumStats.username });
+                        if (sig) this.ensureUserSig(sig);
                     }
                     return {
                         dailyRank: forumStats?.dailyRank || null,
@@ -1309,7 +1500,7 @@
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
 
             } catch (e) {
-                const isLogin = e?.message === 'NeedLogin' || e?.status === 401;
+                const isLogin = e?.message === 'NeedLogin' || e?.status === 401 || /http 401/i.test(e?.message || '');
 
                 if (autoRetry && !isLogin) {
                     this.focusFlags.trust = true;
@@ -1426,23 +1617,8 @@
                 }
                 if (this.creditData) this.renderCredit(this.creditData);
 
-                const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true });
-                const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true });
-
-                let info = null;
-                let stats = [];
-
-                await Promise.all([
-                    infoPromise.then(r => {
-                        info = JSON.parse(r).data;
-                        const sig = this.makeUserSig(info);
-                        if (sig) this.ensureUserSig(sig);
-                    }),
-                    statPromise.then(r => {
-                        stats = JSON.parse(r).data || [];
-                    })
-                ]);
-
+                const creditResult = await this.fetchCreditWithFallback();
+                const { info, stats } = creditResult;
                 this.creditData = { info, stats };
                 this.renderCredit(this.creditData);
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
@@ -1451,7 +1627,7 @@
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
             } catch(e) {
-                const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '');
+                const isLogin = e?.status === 401 || /unauthorized|not\s*login/i.test(e?.responseText || '') || /http 401/i.test(e?.message || '');
 
                 if (autoRetry && !isLogin) {
                     if (existingBtn) existingBtn.classList.remove('loading');
