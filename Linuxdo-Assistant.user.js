@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.4.3
+// @version      4.4.5
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -1091,7 +1091,6 @@
             this.focusFlags = { trust: false, credit: false, cdk: false };
             this.autoRefreshTimer = null;
             this.userWatchTimer = null; // 账号切换/退出检测计时器
-            this.gainRefreshTimer = null; // 涨分数据独立刷新计时器
             this.cdkBridgeInit = false;
             this.cdkBridgeFrame = null;
             this.cdkWaiters = [];
@@ -1130,7 +1129,6 @@
             this.renderFromCacheAll();
             this.prewarmAll();
             this.startAutoRefreshTimer();
-            this.startGainRefreshTimer();
             this.maybeAutoCheckUpdate();
 
             if (this.state.expand || forceOpen) {
@@ -1472,8 +1470,6 @@
                 if (e.target.id === 'inp-gain-anim') {
                     this.state.gainAnim = e.target.checked;
                     Utils.set(CONFIG.KEYS.GAIN_ANIM, e.target.checked);
-                    // 重新启动涨分刷新定时器（开启时启动，关闭时停止）
-                    this.startGainRefreshTimer();
                 }
                 if (wasOpen) this.togglePanel(true);
             };
@@ -2865,57 +2861,6 @@
                 this.refreshCredit({ background: true, force: false });
                 this.refreshCDK({ background: true, force: false });
             }, interval || AUTO_REFRESH_MS);
-        }
-
-        // ===== 涨分数据独立刷新（1分钟一次） =====
-        startGainRefreshTimer() {
-            if (this.gainRefreshTimer) {
-                clearInterval(this.gainRefreshTimer);
-                this.gainRefreshTimer = null;
-            }
-            // 涨分动画关闭时不启动
-            if (!this.state.gainAnim) return;
-
-            // 每1分钟刷新一次涨分数据
-            this.gainRefreshTimer = setInterval(() => {
-                this.refreshGainOnly();
-            }, 60 * 1000);
-        }
-
-        async refreshGainOnly() {
-            // 如果动画关闭或没有已登录用户，跳过
-            if (!this.state.gainAnim) return;
-            if (!this.creditData?.info?.username) return;
-
-            const username = this.creditData.info.username;
-            const communityBalance = this.creditData.communityBalance;
-
-            // 没有基准值无法计算
-            if (!communityBalance || communityBalance <= 0) return;
-
-            try {
-                const userRes = await fetch(CONFIG.API.USER_INFO(username), { credentials: 'include' });
-                if (!userRes.ok) return;
-                const userData = await userRes.json();
-                const newScore = userData?.user?.gamification_score ?? null;
-                if (newScore === null) return;
-
-                const oldGain = this.creditData.estimatedGain ?? null;
-                const newGain = newScore - communityBalance;
-
-                // 更新缓存
-                this.creditData.gamificationScore = newScore;
-                this.creditData.estimatedGain = newGain;
-                Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
-
-                // 检测涨分变化并触发动画
-                this.checkGainAndAnimate(oldGain, newGain);
-
-                // 更新 UI 显示（如果 Credit 面板正在显示）
-                if (this.activePage === 'credit' && this.dom.panel?.style.display === 'flex') {
-                    this.renderCredit(this.creditData);
-                }
-            } catch (_) { /* 静默失败 */ }
         }
 
         async fetchCDKDirect() {
