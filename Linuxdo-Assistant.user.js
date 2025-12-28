@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.3.0
+// @version      4.4.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -78,7 +78,9 @@
             CACHE_SCHEMA: 'lda_v5_cache_schema',
             USER_SIG: 'lda_v5_user_sig',
             LAST_SKIP_UPDATE: 'lda_v5_last_skip_update',
-            LAST_AUTO_CHECK: 'lda_v5_last_auto_check'
+            LAST_AUTO_CHECK: 'lda_v5_last_auto_check',
+            GAIN_ANIM: 'lda_v5_gain_anim',
+            LAST_GAIN: 'lda_v5_last_gain'
         }
     };
     const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
@@ -109,6 +111,11 @@
             credit_keep_cache_tip: "授权校验异常，已继续显示缓存数据",
             balance: "当前余额",
             daily_limit: "今日剩余额度",
+            estimated_gain: "预估明日涨分",
+            gain_tip: "仅供参考",
+            current_score: "当前分",
+            base_value: "基准值",
+            set_gain_anim: "涨分动画提示",
             recent: "近7日收支",
             no_rec: "暂无记录",
             income: "收入",
@@ -198,6 +205,11 @@
             credit_keep_cache_tip: "Authorization check failed; showing cached data.",
             balance: "Balance",
             daily_limit: "Daily Limit",
+            estimated_gain: "Est. Tomorrow",
+            gain_tip: "For reference",
+            current_score: "Current",
+            base_value: "Base",
+            set_gain_anim: "Gain Animation",
             recent: "Recent Activity",
             no_rec: "No activity",
             income: "Income",
@@ -768,10 +780,42 @@
         .lda-diff.up { color: var(--lda-red); background: rgba(239, 68, 68, 0.1); }
         .lda-diff.down { color: var(--lda-green); background: rgba(34, 197, 94, 0.1); }
 
-        /* 积分 */
-        .lda-credit-hero { text-align: center; padding: 20px 0; }
-        .lda-credit-num { font-size: 28px; font-weight: 700; color: var(--lda-fg); font-family: monospace; letter-spacing: -1px; }
-        .lda-credit-label { font-size: 11px; text-transform: uppercase; color: var(--lda-dim); margin-top: 4px; letter-spacing: 1px; }
+        /* 积分 - 左右结构 */
+        .lda-credit-hero { display: flex; align-items: center; justify-content: center; padding: 16px 0; gap: 12px; }
+        .lda-credit-side { text-align: center; flex: 1; min-width: 0; }
+        .lda-credit-num { font-size: 24px; font-weight: 700; color: var(--lda-fg); font-family: monospace; letter-spacing: -1px; }
+        .lda-credit-label { font-size: 10px; text-transform: uppercase; color: var(--lda-dim); margin-top: 2px; letter-spacing: 0.5px; }
+        .lda-credit-sub { font-size: 11px; color: var(--lda-dim); margin-top: 4px; }
+        .lda-credit-sub span { font-weight: 600; color: var(--lda-fg); }
+        .lda-credit-plus { font-size: 20px; font-weight: 300; color: var(--lda-dim); padding: 0 4px; flex-shrink: 0; }
+        .lda-credit-gain { color: var(--lda-green); }
+        .lda-credit-gain-tip { font-size: 9px; color: var(--lda-dim); opacity: 0.7; margin-top: 2px; }
+
+        /* 自定义 tooltip（立即显示） */
+        .lda-gain-tooltip-wrap { position: relative; cursor: help; }
+        .lda-gain-tooltip {
+            position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+            background: rgba(0,0,0,0.85); color: #fff; padding: 6px 10px; border-radius: 6px;
+            font-size: 11px; white-space: pre; line-height: 1.5; z-index: 100;
+            opacity: 0; visibility: hidden; transition: opacity 0.15s, visibility 0.15s;
+            pointer-events: none; margin-bottom: 6px; text-align: left;
+        }
+        .dark .lda-gain-tooltip { background: rgba(255,255,255,0.92); color: #000; }
+        .lda-gain-tooltip-wrap:hover .lda-gain-tooltip { opacity: 1; visibility: visible; }
+
+        /* 涨分动画 */
+        @keyframes lda-gain-pop {
+            0% { transform: scale(0.5) translateY(0); opacity: 0; }
+            15% { transform: scale(1.3) translateY(-5px); opacity: 1; }
+            30% { transform: scale(1) translateY(-8px); opacity: 1; }
+            100% { transform: scale(0.6) translateY(-20px); opacity: 0; }
+        }
+        .lda-gain-anim {
+            position: absolute; font-size: 18px; font-weight: 700; color: var(--lda-green);
+            pointer-events: none; z-index: 10002; font-family: monospace;
+            animation: lda-gain-pop 1.5s ease-out forwards;
+            text-shadow: 0 1px 3px rgba(0,0,0,0.2);
+        }
 
         .lda-row-rec { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px dashed rgba(125,125,125,0.2); font-size: 12px; }
 
@@ -1032,7 +1076,8 @@
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
                 tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']), // 标签顺序
                 refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 30), // 分钟，0 为关闭
-                opacity: Utils.get(CONFIG.KEYS.OPACITY, 1)
+                opacity: Utils.get(CONFIG.KEYS.OPACITY, 1),
+                gainAnim: Utils.get(CONFIG.KEYS.GAIN_ANIM, true) // 涨分动画，默认开启
             };
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
             this.trustData = Utils.get(CONFIG.KEYS.CACHE_TRUST_DATA, null);
@@ -1166,7 +1211,7 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval, opacity } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
@@ -1212,6 +1257,12 @@
                             <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand ? 'checked' : ''}><span class="lda-slider"></span></label>
                             <div class="lda-opt-label" style="font-size:12px">${this.t('set_auto')}</div>
                         </div>
+                        <div style="display:flex;align-items:center;gap:8px;">
+                            <label class="lda-switch"><input type="checkbox" id="inp-gain-anim" ${gainAnim ? 'checked' : ''}><span class="lda-slider"></span></label>
+                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_gain_anim')}</div>
+                        </div>
+                    </div>
+                    <div class="lda-opt">
                         <div class="lda-seg" id="grp-lang">
                             <div class="lda-seg-item ${r('zh', lang)}" data-v="zh">中文</div>
                             <div class="lda-seg-item ${r('en', lang)}" data-v="en">EN</div>
@@ -1413,6 +1464,10 @@
                 if (e.target.id === 'inp-expand') {
                     this.state.expand = e.target.checked;
                     Utils.set(CONFIG.KEYS.EXPAND, e.target.checked);
+                }
+                if (e.target.id === 'inp-gain-anim') {
+                    this.state.gainAnim = e.target.checked;
+                    Utils.set(CONFIG.KEYS.GAIN_ANIM, e.target.checked);
                 }
                 if (wasOpen) this.togglePanel(true);
             };
@@ -1772,6 +1827,76 @@
             } else {
                 doStop();
             }
+        }
+
+        // ===== 涨分动画 =====
+        checkGainAndAnimate(oldGain, newGain) {
+            // 首次加载或无有效数据时不触发
+            if (oldGain === null || newGain === null) return;
+            // 设置关闭时不触发
+            if (!this.state.gainAnim) return;
+
+            const diff = newGain - oldGain;
+            // 最小触发阈值：1
+            if (diff < 1) return;
+
+            this.showGainAnimation(diff);
+        }
+
+        showGainAnimation(diff) {
+            // 移除旧动画
+            const oldAnim = document.querySelector('.lda-gain-anim');
+            if (oldAnim) oldAnim.remove();
+
+            const anim = document.createElement('div');
+            anim.className = 'lda-gain-anim';
+            anim.textContent = `+${diff.toFixed(1)}`;
+
+            const panelVisible = this.dom.panel?.style.display === 'flex';
+
+            if (panelVisible) {
+                // 窗口模式：在窗口内顶部居中显示
+                const creditHero = Utils.el('#lda-credit-hero', this.dom.credit);
+                if (creditHero) {
+                    anim.style.position = 'absolute';
+                    anim.style.top = '50%';
+                    anim.style.left = '50%';
+                    anim.style.transform = 'translate(-50%, -50%) scale(0.5)';
+                    creditHero.parentElement.appendChild(anim);
+                } else {
+                    // fallback: 面板顶部
+                    anim.style.position = 'absolute';
+                    anim.style.top = '10px';
+                    anim.style.left = '50%';
+                    anim.style.transform = 'translateX(-50%) scale(0.5)';
+                    this.dom.panel.appendChild(anim);
+                }
+            } else {
+                // 悬浮球模式：根据位置在左上/右上角显示
+                const ball = this.dom.ball;
+                if (!ball) return;
+
+                const ballRect = ball.getBoundingClientRect();
+                const isRightHalf = ballRect.left > window.innerWidth / 2;
+
+                anim.style.position = 'fixed';
+                anim.style.top = `${ballRect.top - 10}px`;
+
+                if (isRightHalf) {
+                    // 悬浮球在右半边，动画显示在悬浮球左侧
+                    anim.style.right = `${window.innerWidth - ballRect.left + 8}px`;
+                    anim.style.left = 'auto';
+                } else {
+                    // 悬浮球在左半边，动画显示在悬浮球右侧
+                    anim.style.left = `${ballRect.right + 8}px`;
+                    anim.style.right = 'auto';
+                }
+
+                document.body.appendChild(anim);
+            }
+
+            // 动画结束后移除
+            setTimeout(() => anim.remove(), 1500);
         }
 
         // ===== 信任等级：Summary 快照（用于 lv2+ Connect 失败 fallback，以及 lv0-1 失败时的补救展示）=====
@@ -2425,6 +2550,7 @@
 
                 let info = null;
                 let stats = [];
+                let gamificationScore = null;
 
                 await Promise.all([
                     infoPromise.then(r => {
@@ -2437,9 +2563,28 @@
                     })
                 ]);
 
-                this.creditData = { info, stats };
+                // 获取 gamification_score（用于计算预估涨分）
+                if (info?.username) {
+                    try {
+                        const userRes = await Utils.request(CONFIG.API.USER_INFO(info.username), { withCredentials: true });
+                        const userData = JSON.parse(userRes);
+                        gamificationScore = userData?.user?.gamification_score ?? null;
+                    } catch (_) { /* 忽略错误，保持 null */ }
+                }
+
+                const oldGain = this.creditData?.estimatedGain ?? null;
+                // 基准值：community-balance 或 community_balance
+                const communityBalance = parseFloat(info['community-balance'] ?? info.community_balance ?? 0);
+                const newGain = (gamificationScore !== null && communityBalance > 0)
+                    ? gamificationScore - communityBalance
+                    : null;
+
+                this.creditData = { info, stats, gamificationScore, communityBalance, estimatedGain: newGain };
                 this.renderCredit(this.creditData);
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
+
+                // 检测涨分变化并触发动画
+                this.checkGainAndAnimate(oldGain, newGain);
                 this.markFetch('credit');
                 this.stopRefreshWithMinDuration('credit');
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
@@ -2503,6 +2648,11 @@
                 return;
             }
             const stats = data.stats || [];
+            const estimatedGain = data.estimatedGain;
+            const gamificationScore = data.gamificationScore;
+            const communityBalance = data.communityBalance;
+            const hasGain = estimatedGain !== null && estimatedGain !== undefined;
+
             let listHtml = '';
             if (stats.length === 0) {
                 listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
@@ -2515,8 +2665,17 @@
                     if (exp > 0) listHtml += `<div class="lda-row-rec"><span>${date} ${this.t('expense')}</span><span class="lda-amt" style="color:var(--lda-green)">-${exp}</span></div>`;
                 });
             }
+
+            // 预估涨分显示 + 自定义 tooltip（立即显示）
+            const gainTooltipText = hasGain && gamificationScore !== null
+                ? `${this.t('gain_tip')}\n${this.t('current_score')}: ${gamificationScore.toFixed(2)}\n${this.t('base_value')}: ${communityBalance?.toFixed(2) ?? '--'}`
+                : this.t('gain_tip');
+            const gainDisplay = hasGain
+                ? `<div class="lda-credit-num lda-credit-gain">${estimatedGain >= 0 ? '+' : ''}${estimatedGain.toFixed(2)}</div>`
+                : `<div class="lda-credit-num" style="color:var(--lda-dim)">--</div>`;
+
             wrap.innerHTML = Utils.html`
-                <div class="lda-card">
+                <div class="lda-card" style="position:relative;">
                     <div class="lda-actions-group">
                         <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-act-btn" title="${this.t('link_tip')}" id="btn-go-credit-icon">
                             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 19H5V5h7V3H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2v-7h-2v7zM14 3v2h3.59l-9.83 9.83 1.41 1.41L19 6.41V10h2V3h-7z"/></svg>
@@ -2525,10 +2684,19 @@
                             <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z"/></svg>
                         </div>
                     </div>
-                    <div class="lda-credit-hero">
-                        <div class="lda-credit-num">${info.available_balance}</div>
-                        <div class="lda-credit-label">${this.t('balance')}</div>
-                        <div style="margin-top:6px;font-size:12px;color:var(--lda-dim)">${this.t('daily_limit')}: <span style="font-weight:600;color:var(--lda-fg)">${info.remain_quota}</span></div>
+                    <div class="lda-credit-hero" id="lda-credit-hero" style="margin-top:8px;">
+                        <div class="lda-credit-side">
+                            <div class="lda-credit-num">${info.available_balance}</div>
+                            <div class="lda-credit-label">${this.t('balance')}</div>
+                            <div class="lda-credit-sub">${this.t('daily_limit')}: <span>${info.remain_quota}</span></div>
+                        </div>
+                        <div class="lda-credit-plus">+</div>
+                        <div class="lda-credit-side lda-gain-tooltip-wrap">
+                            <div class="lda-gain-tooltip">${gainTooltipText}</div>
+                            ${gainDisplay}
+                            <div class="lda-credit-label">${this.t('estimated_gain')}</div>
+                            <div class="lda-credit-gain-tip">${this.t('gain_tip')}</div>
+                        </div>
                     </div>
                 </div>
                 <div class="lda-card">
