@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.3.0
-// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
+// @version      4.4.0
+// @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 预估站内划转收益 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
 // @match        https://cdk.linux.do/*
@@ -2425,6 +2425,7 @@
 
                 let info = null;
                 let stats = [];
+                let gamificationScore = null;
 
                 await Promise.all([
                     infoPromise.then(r => {
@@ -2437,7 +2438,24 @@
                     })
                 ]);
 
-                this.creditData = { info, stats };
+                // 获取用户名，用于拉取 gamification_score
+                const username = info?.username || Utils.getCurrentUsernameFromDOM() || Utils.getCurrentUsername();
+
+                // 获取 gamification_score
+                if (username) {
+                    try {
+                        const userRes = await Utils.request(`https://linux.do/u/${username}.json`, { withCredentials: true });
+                        const userData = JSON.parse(userRes);
+                        if (userData?.user?.gamification_score !== undefined) {
+                            gamificationScore = parseFloat(userData.user.gamification_score);
+                        }
+                    } catch (e) {
+                        // gamification_score 获取失败不影响主流程
+                        console.warn('LDA: Failed to fetch gamification_score', e);
+                    }
+                }
+
+                this.creditData = { info, stats, gamificationScore };
                 this.renderCredit(this.creditData);
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
                 this.markFetch('credit');
@@ -2503,6 +2521,18 @@
                 return;
             }
             const stats = data.stats || [];
+            const gamificationScore = data.gamificationScore;
+
+            // 计算预估收益差值
+            let estimateHtml = '';
+            if (gamificationScore !== null && gamificationScore !== undefined && info.community_balance !== undefined) {
+                const communityBalance = parseFloat(info.community_balance || info['community-balance'] || 0);
+                const diff = gamificationScore - communityBalance;
+                const sign = diff >= 0 ? '+' : '';
+                const colorClass = diff > 0 ? 'lda-red' : diff < 0 ? 'lda-green' : 'lda-dim';
+                estimateHtml = `<div style="margin-top:6px;font-size:12px;color:var(--lda-dim)">预估今日站内划转收益为: <span style="font-weight:600;color:var(--${colorClass})">${sign}${diff.toFixed(2)}</span></div>`;
+            }
+
             let listHtml = '';
             if (stats.length === 0) {
                 listHtml = `<div style="text-align:center;padding:12px;color:var(--lda-dim);font-size:12px">${this.t('no_rec')}</div>`;
@@ -2529,6 +2559,7 @@
                         <div class="lda-credit-num">${info.available_balance}</div>
                         <div class="lda-credit-label">${this.t('balance')}</div>
                         <div style="margin-top:6px;font-size:12px;color:var(--lda-dim)">${this.t('daily_limit')}: <span style="font-weight:600;color:var(--lda-fg)">${info.remain_quota}</span></div>
+                        ${estimateHtml}
                     </div>
                 </div>
                 <div class="lda-card">
