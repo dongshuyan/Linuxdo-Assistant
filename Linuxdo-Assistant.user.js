@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      4.5.0
+// @version      4.6.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -901,7 +901,7 @@
         .lda-sort-item {
             display: flex; align-items: center; gap: 10px; padding: 10px 12px;
             background: var(--lda-bg); border: var(--lda-border); border-radius: 8px;
-            cursor: grab; user-select: none; transition: all 0.2s;
+            cursor: grab; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; transition: all 0.2s;
         }
         .lda-sort-item:hover { background: rgba(125,125,125,0.08); }
         .lda-sort-item.dragging { opacity: 0.5; cursor: grabbing; transform: scale(1.02); box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
@@ -1343,6 +1343,7 @@
                 });
             };
 
+            // ===== 桌面端：原有 HTML5 Drag and Drop（保持不变）=====
             // 拖拽开始
             container.addEventListener('dragstart', (e) => {
                 if (e.target.classList.contains('lda-sort-item')) {
@@ -1394,6 +1395,115 @@
                     updateNumbers();
                 }
             });
+
+            // ===== 移动端：触摸长按拖拽 =====
+            let touchDragItem = null;
+            let longPressTimer = null;
+            let touchStartY = 0;
+            let isTouchDragging = false;
+            const LONG_PRESS_DELAY = 400; // 长按触发时间（毫秒）
+
+            // 触摸开始
+            container.addEventListener('touchstart', (e) => {
+                const item = e.target.closest('.lda-sort-item');
+                if (!item) return;
+
+                touchStartY = e.touches[0].clientY;
+                touchDragItem = item;
+
+                // 启动长按计时器
+                longPressTimer = setTimeout(() => {
+                    if (touchDragItem) {
+                        isTouchDragging = true;
+                        touchDragItem.classList.add('dragging');
+                        // 阻止页面滚动
+                        container.style.touchAction = 'none';
+                        // 触觉反馈（如果浏览器支持）
+                        if (navigator.vibrate) navigator.vibrate(30);
+                    }
+                }, LONG_PRESS_DELAY);
+            }, { passive: true });
+
+            // 触摸移动
+            container.addEventListener('touchmove', (e) => {
+                // 如果还没进入拖拽模式，检查是否是滚动操作
+                if (!isTouchDragging) {
+                    const moveY = Math.abs(e.touches[0].clientY - touchStartY);
+                    // 如果移动超过10px，认为是滚动，取消长按
+                    if (moveY > 10) {
+                        clearTimeout(longPressTimer);
+                        longPressTimer = null;
+                        touchDragItem = null;
+                    }
+                    return;
+                }
+
+                // 拖拽模式下
+                e.preventDefault();
+                const touch = e.touches[0];
+                const target = document.elementFromPoint(touch.clientX, touch.clientY);
+                const targetItem = target?.closest('.lda-sort-item');
+
+                // 清除所有 drag-over 样式
+                container.querySelectorAll('.lda-sort-item').forEach(item => {
+                    item.classList.remove('drag-over');
+                });
+
+                // 高亮目标位置
+                if (targetItem && targetItem !== touchDragItem) {
+                    targetItem.classList.add('drag-over');
+                }
+            }, { passive: false });
+
+            // 触摸结束
+            container.addEventListener('touchend', (e) => {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+
+                if (isTouchDragging && touchDragItem) {
+                    // 找到最后高亮的目标
+                    const targetItem = container.querySelector('.lda-sort-item.drag-over');
+                    if (targetItem && targetItem !== touchDragItem) {
+                        const items = [...container.querySelectorAll('.lda-sort-item')];
+                        const draggedIdx = items.indexOf(touchDragItem);
+                        const targetIdx = items.indexOf(targetItem);
+
+                        if (draggedIdx < targetIdx) {
+                            targetItem.after(touchDragItem);
+                        } else {
+                            targetItem.before(touchDragItem);
+                        }
+                        updateNumbers();
+                    }
+
+                    // 清理状态
+                    touchDragItem.classList.remove('dragging');
+                    container.querySelectorAll('.lda-sort-item').forEach(item => {
+                        item.classList.remove('drag-over');
+                    });
+                    container.style.touchAction = '';
+                }
+
+                touchDragItem = null;
+                isTouchDragging = false;
+            }, { passive: true });
+
+            // 触摸取消
+            container.addEventListener('touchcancel', () => {
+                clearTimeout(longPressTimer);
+                longPressTimer = null;
+
+                if (touchDragItem) {
+                    touchDragItem.classList.remove('dragging');
+                }
+                container.querySelectorAll('.lda-sort-item').forEach(item => {
+                    item.classList.remove('drag-over');
+                });
+                container.style.touchAction = '';
+
+                touchDragItem = null;
+                isTouchDragging = false;
+            }, { passive: true });
 
             // 保存按钮
             saveBtn.onclick = (e) => {
