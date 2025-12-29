@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.3.0
+// @version      5.3.1
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -21,6 +21,12 @@
 // @updateURL    https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/Linuxdo-Assistant.user.js
 // @downloadURL  https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/Linuxdo-Assistant.user.js
 // ==/UserScript==
+
+/**
+ * 更新日志 v5.3.1
+ * - 修复：悬浮球展开面板后再收起，位置会向左偏移的问题
+ *   原因：updatePanelSide() 使用面板展开后的宽度计算位置，现改为使用悬浮球实际宽度
+ */
 
 (function () {
     'use strict';
@@ -3338,10 +3344,14 @@
 
         updatePanelSide() {
             const rect = this.dom.root.getBoundingClientRect();
-            const rootWidth = rect.width || (this.dom.ball?.getBoundingClientRect().width) || 40;
+            // 修复：始终使用悬浮球的宽度来计算，避免面板展开时宽度变化导致位置偏移
+            const ballWidth = this.dom.ball?.getBoundingClientRect().width || 40;
             const panelWidth = this.dom.panel.getBoundingClientRect().width || 340;
-            const spaceLeft = rect.left;
-            const spaceRight = window.innerWidth - rect.right;
+            // 使用悬浮球宽度计算实际的左右空间
+            const ballLeft = rect.left;
+            const ballRight = ballLeft + ballWidth;
+            const spaceLeft = ballLeft;
+            const spaceRight = window.innerWidth - ballRight;
 
             let side = 'left';
             if (spaceRight >= panelWidth + 12) side = 'right';
@@ -3351,9 +3361,10 @@
             this.dom.root.classList.toggle('lda-side-right', side === 'right');
             this.dom.root.classList.toggle('lda-side-left', side === 'left');
 
-            const clampedLeft = Math.min(Math.max(rect.left, 0), Math.max(0, window.innerWidth - rootWidth));
+            // 修复：边界修正时使用悬浮球宽度，而非面板展开后的宽度
+            const clampedLeft = Math.min(Math.max(ballLeft, 0), Math.max(0, window.innerWidth - ballWidth));
             const clampedTop = Math.min(Math.max(rect.top, 0), Math.max(0, window.innerHeight - 50));
-            this.dom.root.style.right = Math.max(0, window.innerWidth - clampedLeft - rootWidth) + 'px';
+            this.dom.root.style.right = Math.max(0, window.innerWidth - clampedLeft - ballWidth) + 'px';
             this.dom.root.style.top = clampedTop + 'px';
         }
 
