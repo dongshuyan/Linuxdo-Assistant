@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.2.0
+// @version      5.3.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -307,13 +307,13 @@
     // 工具函数
     class Utils {
         static async request(url, options = {}) {
-            const { withCredentials, retries = 3, timeout = 8000, ...validOptions } = options;
+            const { retries = 3, timeout = 8000, withCredentials = false, ...validOptions } = options;
             const attempts = Math.max(1, retries);
             let lastErr;
             for (let i = 0; i < attempts; i++) {
                 try {
                     const res = await new Promise((resolve, reject) => {
-                        GM_xmlhttpRequest({
+                        const reqConfig = {
                             method: 'GET',
                             url,
                             headers: { 'Cache-Control': 'no-cache' },
@@ -323,7 +323,12 @@
                             onload: r => (r.status >= 200 && r.status < 300) ? resolve(r.responseText) : reject(r),
                             onerror: e => reject(e),
                             ontimeout: () => reject(new Error('timeout'))
-                        });
+                        };
+                        // Firefox + Tampermonkey 需要显式设置 withCredentials 以确保跨域 cookie 发送
+                        if (withCredentials) {
+                            reqConfig.withCredentials = true;
+                        }
+                        GM_xmlhttpRequest(reqConfig);
                     });
                     return res;
                 } catch (e) {
@@ -476,9 +481,9 @@
             }
         }
 
-        // 从 connect.linux.do 的欢迎语中解析“用户名 + 当前等级”（参考 v4 逻辑）
+        // 从 connect.linux.do 的欢迎语中解析"用户名 + 当前等级"（参考 v4 逻辑）
         static async fetchConnectWelcome() {
-            const html = await Utils.request(CONFIG.API.TRUST, { timeout: 15000, retries: 2 });
+            const html = await Utils.request(CONFIG.API.TRUST, { timeout: 15000, retries: 2, withCredentials: true });
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const bodyText = doc.body?.textContent || '';
             const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
@@ -2380,7 +2385,7 @@
 
         // ===== 2级及以上用户数据获取（使用 connect.linux.do）=====
         async fetchHighLevelTrustData(knownLevel = null) {
-            const html = await Utils.request(CONFIG.API.TRUST);
+            const html = await Utils.request(CONFIG.API.TRUST, { withCredentials: true });
             const doc = new DOMParser().parseFromString(html, 'text/html');
             const bodyText = doc.body?.textContent || '';
             const loginHint = doc.querySelector('a[href*="/login"], form[action*="/login"], form[action*="/session"]');
