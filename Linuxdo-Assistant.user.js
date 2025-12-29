@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.3.1
+// @version      5.4.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,9 +23,10 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.3.1
- * - 修复：悬浮球展开面板后再收起，位置会向左偏移的问题
- *   原因：updatePanelSide() 使用面板展开后的宽度计算位置，现改为使用悬浮球实际宽度
+ * 更新日志 v5.4.0
+ * - 修复：悬浮球展开面板后再收起，位置会偏移的问题
+ *   原因：updatePanelSide() 不应在面板展开时重新计算位置（此时悬浮球已隐藏，布局数据不准确）
+ *   方案：改为从存储的位置值计算面板方向，不再修改 right/top 样式
  */
 
 (function () {
@@ -3343,15 +3344,15 @@
         }
 
         updatePanelSide() {
-            const rect = this.dom.root.getBoundingClientRect();
-            // 修复：始终使用悬浮球的宽度来计算，避免面板展开时宽度变化导致位置偏移
-            const ballWidth = this.dom.ball?.getBoundingClientRect().width || 40;
-            const panelWidth = this.dom.panel.getBoundingClientRect().width || 340;
-            // 使用悬浮球宽度计算实际的左右空间
-            const ballLeft = rect.left;
-            const ballRight = ballLeft + ballWidth;
+            // 从存储中读取位置来计算面板方向，避免在面板展开时因布局变化导致计算错误
+            const savedPos = Utils.get(CONFIG.KEYS.POS, { r: 20, t: 100 });
+            const ballWidth = 40; // 悬浮球固定宽度
+            const panelWidth = 340; // 面板大致宽度
+
+            // 根据保存的 right 值计算悬浮球的左边界位置
+            const ballLeft = window.innerWidth - savedPos.r - ballWidth;
             const spaceLeft = ballLeft;
-            const spaceRight = window.innerWidth - ballRight;
+            const spaceRight = savedPos.r; // right 值就是右侧空间
 
             let side = 'left';
             if (spaceRight >= panelWidth + 12) side = 'right';
@@ -3361,11 +3362,8 @@
             this.dom.root.classList.toggle('lda-side-right', side === 'right');
             this.dom.root.classList.toggle('lda-side-left', side === 'left');
 
-            // 修复：边界修正时使用悬浮球宽度，而非面板展开后的宽度
-            const clampedLeft = Math.min(Math.max(ballLeft, 0), Math.max(0, window.innerWidth - ballWidth));
-            const clampedTop = Math.min(Math.max(rect.top, 0), Math.max(0, window.innerHeight - 50));
-            this.dom.root.style.right = Math.max(0, window.innerWidth - clampedLeft - ballWidth) + 'px';
-            this.dom.root.style.top = clampedTop + 'px';
+            // 注意：不在这里重新设置 right/top，位置由拖拽逻辑和 restorePos() 管理
+            // 边界修正在拖拽结束时已经处理（onUp/onTouchEnd 中的 clamp 逻辑）
         }
 
         applyTheme() {
