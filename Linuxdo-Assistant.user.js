@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.0.0
+// @version      5.1.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -95,11 +95,11 @@
         lg: 128   // 大
     };
 
-    // 小秘书图片配置
+    // 小秘书图片配置 (512x512 高清版)
     const SECRETARY_ICONS = {
-        normal: 'https://linux.do/uploads/default/original/4X/e/0/5/e05b8f39191aa12af9926e2b6a6ebeb11b9e9a5e.png',
-        hover: 'https://linux.do/uploads/default/original/4X/d/3/6/d36a450d7fea67f9d62b0612f9d1a21fbfac7bf5.png',
-        version: '1' // 用于缓存版本控制
+        normal: 'https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/pics/l1-m.png',
+        hover: 'https://raw.githubusercontent.com/dongshuyan/Linuxdo-Assistant/main/pics/l2-m.png',
+        version: '2' // 用于缓存版本控制，更新图片时递增此值
     };
     const AUTO_REFRESH_MS = 30 * 60 * 1000; // 半小时定时刷新
 
