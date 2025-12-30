@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.5.0
+// @version      5.6.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,17 +23,11 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.5.0
- * - 修复：Firefox + Tampermonkey 下无法获取 Credit 和 Trust 数据的问题
- *   原因：Firefox 对跨域请求需要正确的 Referer 头才能发送 cookie
- *   方案：为 Credit 和 Trust 的跨域请求添加相应的 Referer 头
- * - 优化：Utils.request 方法支持自定义 headers 合并
- * - 优化：Credit 授权过期提示更友好，区分用户是否登录主站
- * - 新增：顶栏按钮显示模式（可在设置中切换）
- * - 新增：信任等级页显示注册天数
- * - 优化：授权/刷新按钮添加 loading 状态
+ * 更新日志 v5.6.0
+ * - 优化：设置页"支持作者"改为"支持小秘书"，文案改为随机撒娇语录
  *
  * 历史更新：
+ * v5.5.0 - 修复 Firefox 数据获取 + 顶栏按钮模式 + 注册天数显示
  * v5.4.0 - 修复悬浮球展开面板后位置偏移问题
  * v5.3.0 - 修复 Firefox + Tampermonkey 跨域 cookie 问题（withCredentials）
  */
@@ -209,8 +203,23 @@
             cdk_go_auth: "前往登录",
             cdk_refresh: "刷新",
             cdk_score_desc: "基于徽章计算的社区信誉分",
-            support_title: "支持作者",
-            support_desc: "您的支持是持续开发的动力",
+            support_title: "支持小秘书",
+            support_desc: [
+                "小秘书可以来一杯咖啡吗～☕",
+                "人家也想吃小蛋糕嘛～🍰",
+                "主人～打赏一下小秘书呗～",
+                "小秘书今天也很努力工作了哦！",
+                "给小秘书买杯奶茶好不好嘛～🧋",
+                "小秘书的服务还满意吗？(｡･ω･｡)",
+                "哼！不打赏的话人家要生气了！",
+                "主人最好了～会支持小秘书的对吧？",
+                "小秘书好饿...想吃蛋糕...🎂",
+                "打赏的话，小秘书会更加努力的！",
+                "诶嘿嘿～主人要请客吗？(≧▽≦)",
+                "小秘书的电费要靠主人啦～⚡",
+                "支持一下嘛～小秘书会记住你的！💕",
+                "人家每天都在认真工作呢...(눈_눈)"
+            ],
             support_thanks: "感谢您的支持 ❤️",
             slow_tip: "请求有点慢，稍等我处理一下…",
             clear_cache: "清除缓存",
@@ -315,8 +324,23 @@
             cdk_go_auth: "Go to Login",
             cdk_refresh: "Refresh",
             cdk_score_desc: "Community reputation based on badges",
-            support_title: "Support",
-            support_desc: "Your support keeps development going",
+            support_title: "Support Secretary",
+            support_desc: [
+                "Can I have a cup of coffee? ☕",
+                "I'd love a little cake~ 🍰",
+                "Please support your secretary~",
+                "I worked really hard today!",
+                "How about some bubble tea? 🧋",
+                "Are you happy with my service? (｡･ω･｡)",
+                "Hmph! I'll be upset if you don't tip!",
+                "You'll support me, right master~?",
+                "So hungry... want cake... 🎂",
+                "I'll work even harder with your support!",
+                "Ehehe~ Treating me today? (≧▽≦)",
+                "My electricity bill depends on you~ ⚡",
+                "Support me~ I'll remember you! 💕",
+                "I work hard every day you know... (눈_눈)"
+            ],
             support_thanks: "Thank you for your support ❤️",
             slow_tip: "It's a bit slow, please hold on…",
             clear_cache: "Clear cache",
@@ -1138,7 +1162,7 @@
         .lda-sort-btn:hover { opacity: 0.9; }
         .lda-sort-btn.saved { background: var(--lda-green); }
 
-        /* 支持作者区域 */
+        /* 支持小秘书区域 */
         .lda-support {
             background: linear-gradient(135deg, rgba(239, 68, 68, 0.08), rgba(249, 115, 22, 0.06), rgba(59, 130, 246, 0.08));
             border-radius: 10px; padding: 10px 12px; margin-bottom: 10px;
@@ -1370,6 +1394,15 @@
         }
 
         t(key) { return I18N[this.state.lang][key] || key; }
+
+        // 随机获取小秘书撒娇文案
+        getRandomSupportDesc() {
+            const descs = I18N[this.state.lang].support_desc;
+            if (Array.isArray(descs) && descs.length > 0) {
+                return descs[Math.floor(Math.random() * descs.length)];
+            }
+            return descs || '';
+        }
 
         renderLayout() {
             const isHeaderMode = this.state.displayMode === 'header';
@@ -1605,7 +1638,7 @@
                             <span class="lda-support-heart">💖</span>
                             ${this.t('support_title')}
                         </div>
-                        <div class="lda-support-desc">${this.t('support_desc')}</div>
+                        <div class="lda-support-desc">${this.getRandomSupportDesc()}</div>
                     </div>
                     <div class="lda-support-grid">
                         ${supportCardsHtml}
