@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.12.0
+// @version      5.13.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,14 +23,12 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.12.0
- * - 修复：主页筛选工具在严格筛选时导致页面无限刷新的问题
- * - 优化：移除自动加载逻辑，改用透明 spacer 补偿隐藏内容高度
- * - 新增：筛选列表末尾添加"加载更多"按钮，用户可手动触发加载
- * - 新增：加载后显示提示，告知用户新增了多少符合条件的帖子
- * - 调整：主页筛选工具默认开启
+ * 更新日志 v5.13.0
+ * - 新增：长按悬浮球/顶栏按钮可快速返回帖子1楼（在帖子楼层页面生效）
+ * - 调整：自动展开面板默认关闭
  *
  * 历史更新：
+ * v5.12.0 - 修复筛选工具无限刷新、新增加载更多按钮
  * v5.10.0 - 修复请求过于频繁问题、防止iframe多实例、增加防抖和冷却机制
  * v5.8.0 - 优化：设置页拆分为"功能"和"外观"双标签页 + 字体大小调节
  * v5.7.0 - 新增：主页筛选工具 - 按等级/分类/标签筛选帖子，支持预设保存和拖拽排序
@@ -111,6 +109,8 @@
             SIEVE_TAGS: 'lda_v5_sieve_tags',
             SIEVE_PRESETS: 'lda_v5_sieve_presets',
             SIEVE_PRESET_ORDER: 'lda_v5_sieve_preset_order',
+            // 限流锁持久化
+            RATE_LIMIT: 'lda_v5_rate_limit',
             // 字体大小
             FONT_SIZE: 'lda_v5_font_size',
             SETTING_SUB_TAB: 'lda_v5_setting_sub_tab'
@@ -277,7 +277,10 @@
             set_func: "功能",
             set_appearance: "外观",
             set_font_size: "字体大小",
-            font_size_reset: "重置"
+            font_size_reset: "重置",
+            // 返回1楼功能
+            back_to_first: "返回1楼",
+            back_to_first_tip: "长按悬浮球也可返回1楼"
         },
         en: {
             title: "Linux.do HUD",
@@ -421,7 +424,10 @@
             set_func: "Functions",
             set_appearance: "Appearance",
             set_font_size: "Font Size",
-            font_size_reset: "Reset"
+            font_size_reset: "Reset",
+            // Back to first floor
+            back_to_first: "Go to OP",
+            back_to_first_tip: "Long press float icon to go to OP"
         }
     };
 
@@ -429,14 +435,30 @@
     class Utils {
         // 【分组限流锁】每组接口独立控制 429 冷却时间戳
         // 分组：session, user, leaderboard, connect, credit, cdk
-        static rateLimitUntil = {
-            session: 0,      // fetchSessionUser - /session/current.json
-            user: 0,         // fetchUserInfo + fetchUserSummary - /u/*.json
-            leaderboard: 0,  // fetchForumStats - /leaderboard/*.json
-            connect: 0,      // connect.linux.do
-            credit: 0,       // credit.linux.do
-            cdk: 0           // cdk.linux.do
-        };
+        // 初始化时从存储中恢复限流状态，支持跨页面/刷新持久化
+        static rateLimitUntil = (() => {
+            const defaultVal = {
+                session: 0,      // fetchSessionUser - /session/current.json
+                user: 0,         // fetchUserInfo + fetchUserSummary - /u/*.json
+                leaderboard: 0,  // fetchForumStats - /leaderboard/*.json
+                connect: 0,      // connect.linux.do
+                credit: 0,       // credit.linux.do
+                cdk: 0           // cdk.linux.do
+            };
+            try {
+                const saved = GM_getValue(CONFIG.KEYS.RATE_LIMIT, null);
+                if (saved && typeof saved === 'object') {
+                    const now = Date.now();
+                    // 恢复尚未过期的限流锁
+                    Object.keys(defaultVal).forEach(k => {
+                        if (saved[k] && saved[k] > now) {
+                            defaultVal[k] = saved[k];
+                        }
+                    });
+                }
+            } catch (_) { /* 忽略读取错误 */ }
+            return defaultVal;
+        })();
 
         // 检查指定分组是否在限流冷却期内
         static isRateLimited(group) {
@@ -448,6 +470,10 @@
             const retryAfter = Math.max(10, retryAfterSeconds);
             Utils.rateLimitUntil[group] = Date.now() + (retryAfter * 1000);
             console.warn(`[LDA] 429 限流: ${group} 组冷却 ${retryAfter}s`);
+            // 持久化到存储，支持跨页面/刷新保持限流状态
+            try {
+                GM_setValue(CONFIG.KEYS.RATE_LIMIT, { ...Utils.rateLimitUntil });
+            } catch (_) { /* 忽略写入错误 */ }
         }
 
         // 根据 URL 判断所属分组（用于 Utils.request 跨域请求）
@@ -1553,6 +1579,16 @@
         .lda-celebration-actions button { min-width: 88px; }
         .lda-celebration-details { display: none; flex-direction: column; gap: 10px; }
         .lda-celebration-scroll { max-height: 300px; overflow-y: auto; padding-right: 6px; }
+
+        /* 长按悬浮球/顶栏按钮时的提示效果 */
+        .lda-ball.lda-long-pressing,
+        .lda-header-btn.lda-long-pressing {
+            animation: lda-long-press-pulse 0.5s ease-out;
+        }
+        @keyframes lda-long-press-pulse {
+            0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.6); }
+            100% { box-shadow: 0 0 0 15px rgba(59, 130, 246, 0); }
+        }
 
     `;
 
@@ -2815,7 +2851,7 @@
                 lang: Utils.get(CONFIG.KEYS.LANG, 'zh'),
                 theme: Utils.get(CONFIG.KEYS.THEME, 'auto'),
                 height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
-                expand: Utils.get(CONFIG.KEYS.EXPAND, true),   // Default: True
+                expand: Utils.get(CONFIG.KEYS.EXPAND, false),  // Default: False
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
                 tabOrder: Utils.get(CONFIG.KEYS.TAB_ORDER, ['trust', 'credit', 'cdk']), // 标签顺序
                 refreshInterval: Utils.get(CONFIG.KEYS.REFRESH_INTERVAL, 30), // 分钟，0 为关闭
@@ -2909,6 +2945,35 @@
                 return descs[Math.floor(Math.random() * descs.length)];
             }
             return descs || '';
+        }
+
+        // ========== 返回1楼功能 ==========
+        // 检测是否在帖子楼层页面（非1楼）
+        isTopicFloorPage() {
+            const path = window.location.pathname;
+            // 匹配 /t/xxx/数字 或 /t/xxx/xxx/数字 格式
+            const match = path.match(/^\/t\/[^\/]+(?:\/[^\/]+)?\/(\d+)$/);
+            if (match) {
+                const floor = parseInt(match[1], 10);
+                return floor > 1;
+            }
+            return false;
+        }
+
+        // 获取1楼的URL
+        getFirstFloorUrl() {
+            const path = window.location.pathname;
+            // 移除末尾的楼层号
+            const firstFloorPath = path.replace(/\/\d+$/, '');
+            return window.location.origin + firstFloorPath;
+        }
+
+        // 跳转到1楼
+        navigateToFirstFloor() {
+            if (!this.isTopicFloorPage()) return false;
+            const url = this.getFirstFloorUrl();
+            window.location.href = url;
+            return true;
         }
 
         renderLayout() {
@@ -3018,10 +3083,87 @@
                 btn.innerHTML = `<span class="lda-header-btn-img-wrap"><img class="lda-header-btn-img lda-header-btn-img-normal" src="${normalUrl}" alt=""><img class="lda-header-btn-img lda-header-btn-img-hover" src="${hoverUrl}" alt=""></span>小秘书`;
             }
 
+            // 长按返回1楼相关变量
+            let longPressTimer = null;
+            let longPressTriggered = false;
+            const LONG_PRESS_DURATION = 500;
+
+            const cancelLongPress = () => {
+                if (longPressTimer) {
+                    clearTimeout(longPressTimer);
+                    longPressTimer = null;
+                }
+                btn.classList.remove('lda-long-pressing');
+            };
+
+            const triggerLongPress = () => {
+                longPressTriggered = true;
+                cancelLongPress();
+                btn.classList.add('lda-long-pressing');
+                if (this.navigateToFirstFloor()) {
+                    this.showToast(this.t('back_to_first'), 'success', 1500);
+                }
+            };
+
+            // 鼠标事件
+            btn.onmousedown = (e) => {
+                if (e.button !== 0) return;
+                longPressTriggered = false;
+                if (this.isTopicFloorPage()) {
+                    longPressTimer = setTimeout(triggerLongPress, LONG_PRESS_DURATION);
+                }
+            };
+
+            btn.onmouseup = () => cancelLongPress();
+            btn.onmouseleave = () => cancelLongPress();
+
             btn.onclick = (e) => {
                 e.stopPropagation();
+                if (longPressTriggered) {
+                    longPressTriggered = false;
+                    return;
+                }
                 this.togglePanel(this.dom.panel.style.display !== 'flex');
             };
+
+            // 触摸事件
+            let touchLongPressTimer = null;
+            let touchLongPressTriggered = false;
+
+            const cancelTouchLongPress = () => {
+                if (touchLongPressTimer) {
+                    clearTimeout(touchLongPressTimer);
+                    touchLongPressTimer = null;
+                }
+                btn.classList.remove('lda-long-pressing');
+            };
+
+            const triggerTouchLongPress = () => {
+                touchLongPressTriggered = true;
+                cancelTouchLongPress();
+                btn.classList.add('lda-long-pressing');
+                if (navigator.vibrate) navigator.vibrate(50);
+                if (this.navigateToFirstFloor()) {
+                    this.showToast(this.t('back_to_first'), 'success', 1500);
+                }
+            };
+
+            btn.ontouchstart = (e) => {
+                touchLongPressTriggered = false;
+                if (this.isTopicFloorPage()) {
+                    touchLongPressTimer = setTimeout(triggerTouchLongPress, LONG_PRESS_DURATION);
+                }
+            };
+
+            btn.ontouchend = () => {
+                cancelTouchLongPress();
+                if (!touchLongPressTriggered) {
+                    // 正常点击，触发展开/收起面板（延迟一点以避免与长按冲突）
+                }
+                touchLongPressTriggered = false;
+            };
+
+            btn.ontouchcancel = () => cancelTouchLongPress();
 
             headerButtons.insertBefore(btn, headerButtons.firstChild);
             this.dom.headerBtn = btn;
@@ -5403,12 +5545,41 @@
             if (this.state.displayMode === 'header') return;
 
             let isDrag = false, hasDragged = false, startX, startY, startR, startT;
+            // 长按返回1楼相关变量
+            let longPressTimer = null;
+            let longPressTriggered = false;
+            const LONG_PRESS_DURATION = 500; // 长按时间阈值（毫秒）
+
+            // 取消长按计时器
+            const cancelLongPress = () => {
+                if (longPressTimer) {
+                    clearTimeout(longPressTimer);
+                    longPressTimer = null;
+                }
+                this.dom.ball.classList.remove('lda-long-pressing');
+            };
+
+            // 执行长按返回1楼
+            const triggerLongPress = () => {
+                longPressTriggered = true;
+                cancelLongPress();
+                // 添加视觉反馈
+                this.dom.ball.classList.add('lda-long-pressing');
+                // 执行返回1楼
+                if (this.navigateToFirstFloor()) {
+                    // 跳转成功，显示提示
+                    this.showToast(this.t('back_to_first'), 'success', 1500);
+                }
+            };
 
             const onMove = (e) => {
                 if (!isDrag) return;
                 const dx = e.clientX - startX;
                 const dy = e.clientY - startY;
-                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) hasDragged = true;
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                    hasDragged = true;
+                    cancelLongPress(); // 拖拽时取消长按
+                }
                 requestAnimationFrame(() => {
                     this.dom.root.style.right = Math.max(0, startR - dx) + 'px';
                     this.dom.root.style.top = Math.max(0, Math.min(startT + dy, window.innerHeight - 50)) + 'px';
@@ -5416,6 +5587,7 @@
             };
 
             const onUp = () => {
+                cancelLongPress(); // 松开时取消长按
                 if (isDrag) {
                     isDrag = false;
                     this.dom.ball.classList.remove('dragging');
@@ -5432,12 +5604,19 @@
                 if (target === this.dom.head && e.target.closest('.lda-icon-btn')) return;
                 isDrag = true;
                 hasDragged = false;
+                longPressTriggered = false;
                 startX = e.clientX;
                 startY = e.clientY;
                 const rect = this.dom.root.getBoundingClientRect();
                 startR = window.innerWidth - rect.right;
                 startT = rect.top;
-                if (target === this.dom.ball) this.dom.ball.classList.add('dragging');
+                if (target === this.dom.ball) {
+                    this.dom.ball.classList.add('dragging');
+                    // 仅在帖子页面且非1楼时启动长按计时器
+                    if (this.isTopicFloorPage()) {
+                        longPressTimer = setTimeout(triggerLongPress, LONG_PRESS_DURATION);
+                    }
+                }
                 document.addEventListener('mousemove', onMove);
                 document.addEventListener('mouseup', onUp);
                 e.preventDefault();
@@ -5446,8 +5625,9 @@
             this.dom.ball.onmousedown = (e) => startDrag(e, this.dom.ball);
 
             this.dom.ball.onclick = (e) => {
-                if (hasDragged) {
+                if (hasDragged || longPressTriggered) {
                     hasDragged = false;
+                    longPressTriggered = false;
                     e.stopPropagation();
                     return;
                 }
@@ -5458,13 +5638,43 @@
 
             // 移动端触摸事件支持
             let isTouchDrag = false, hasTouchDragged = false, touchStartX, touchStartY, touchStartR, touchStartT;
+            let touchLongPressTimer = null;
+            let touchLongPressTriggered = false;
+
+            // 取消触摸长按计时器
+            const cancelTouchLongPress = () => {
+                if (touchLongPressTimer) {
+                    clearTimeout(touchLongPressTimer);
+                    touchLongPressTimer = null;
+                }
+                this.dom.ball.classList.remove('lda-long-pressing');
+            };
+
+            // 执行触摸长按返回1楼
+            const triggerTouchLongPress = () => {
+                touchLongPressTriggered = true;
+                cancelTouchLongPress();
+                // 添加视觉反馈
+                this.dom.ball.classList.add('lda-long-pressing');
+                // 震动反馈（如果支持）
+                if (navigator.vibrate) {
+                    navigator.vibrate(50);
+                }
+                // 执行返回1楼
+                if (this.navigateToFirstFloor()) {
+                    this.showToast(this.t('back_to_first'), 'success', 1500);
+                }
+            };
 
             const onTouchMove = (e) => {
                 if (!isTouchDrag) return;
                 const touch = e.touches[0];
                 const dx = touch.clientX - touchStartX;
                 const dy = touch.clientY - touchStartY;
-                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) hasTouchDragged = true;
+                if (Math.abs(dx) > 5 || Math.abs(dy) > 5) {
+                    hasTouchDragged = true;
+                    cancelTouchLongPress(); // 拖拽时取消长按
+                }
                 if (hasTouchDragged) e.preventDefault();
                 requestAnimationFrame(() => {
                     this.dom.root.style.right = Math.max(0, touchStartR - dx) + 'px';
@@ -5473,6 +5683,7 @@
             };
 
             const onTouchEnd = () => {
+                cancelTouchLongPress(); // 松开时取消长按
                 if (isTouchDrag) {
                     isTouchDrag = false;
                     this.dom.ball.classList.remove('dragging');
@@ -5482,11 +5693,12 @@
                     const r = this.dom.root.getBoundingClientRect();
                     Utils.set(CONFIG.KEYS.POS, { r: window.innerWidth - r.right, t: r.top });
                     this.updatePanelSide();
-                    // 处理触摸点击
-                    if (!hasTouchDragged) {
+                    // 处理触摸点击（长按触发后不展开面板）
+                    if (!hasTouchDragged && !touchLongPressTriggered) {
                         this.togglePanel(true);
                     }
                     hasTouchDragged = false;
+                    touchLongPressTriggered = false;
                 }
             };
 
@@ -5495,12 +5707,19 @@
                 const touch = e.touches[0];
                 isTouchDrag = true;
                 hasTouchDragged = false;
+                touchLongPressTriggered = false;
                 touchStartX = touch.clientX;
                 touchStartY = touch.clientY;
                 const rect = this.dom.root.getBoundingClientRect();
                 touchStartR = window.innerWidth - rect.right;
                 touchStartT = rect.top;
-                if (target === this.dom.ball) this.dom.ball.classList.add('dragging');
+                if (target === this.dom.ball) {
+                    this.dom.ball.classList.add('dragging');
+                    // 仅在帖子页面且非1楼时启动长按计时器
+                    if (this.isTopicFloorPage()) {
+                        touchLongPressTimer = setTimeout(triggerTouchLongPress, LONG_PRESS_DURATION);
+                    }
+                }
                 document.addEventListener('touchmove', onTouchMove, { passive: false });
                 document.addEventListener('touchend', onTouchEnd);
                 document.addEventListener('touchcancel', onTouchEnd);
