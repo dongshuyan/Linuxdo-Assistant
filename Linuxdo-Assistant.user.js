@@ -4504,9 +4504,11 @@
                 ]);
 
                 // 获取 gamification_score（用于计算预估涨分）
-                if (info?.username) {
+                // 兼容 CREDIT_INFO API 返回 username 或 nickname 字段
+                const creditUsername = info?.username || info?.nickname;
+                if (creditUsername) {
                     try {
-                        const userRes = await Utils.request(CONFIG.API.USER_INFO(info.username), { withCredentials: true });
+                        const userRes = await Utils.request(CONFIG.API.USER_INFO(creditUsername), { withCredentials: true });
                         const userData = JSON.parse(userRes);
                         gamificationScore = userData?.user?.gamification_score ?? null;
                     } catch (_) { /* 忽略错误，保持 null */ }
