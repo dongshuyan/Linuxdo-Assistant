@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.10.0
+// @version      5.12.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,15 +23,15 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.10.0
- * - 修复：增加 429 Too Many Requests 处理和指数退避重试机制，避免请求过于频繁
- * - 修复：防止在 iframe 中运行主逻辑，避免多实例化导致并发请求
- * - 修复：防止 window/document 级事件监听器重复绑定
- * - 修复：增加 tick 防抖机制和全局请求冷却，避免循环刷新
- * - 修复：不再自动设置 focusFlags，仅在用户点击跳转链接时设置
- * - 调整：主页筛选工具默认关闭
+ * 更新日志 v5.12.0
+ * - 修复：主页筛选工具在严格筛选时导致页面无限刷新的问题
+ * - 优化：移除自动加载逻辑，改用透明 spacer 补偿隐藏内容高度
+ * - 新增：筛选列表末尾添加"加载更多"按钮，用户可手动触发加载
+ * - 新增：加载后显示提示，告知用户新增了多少符合条件的帖子
+ * - 调整：主页筛选工具默认开启
  *
  * 历史更新：
+ * v5.10.0 - 修复请求过于频繁问题、防止iframe多实例、增加防抖和冷却机制
  * v5.8.0 - 优化：设置页拆分为"功能"和"外观"双标签页 + 字体大小调节
  * v5.7.0 - 新增：主页筛选工具 - 按等级/分类/标签筛选帖子，支持预设保存和拖拽排序
  * v5.6.0 - 优化：设置页"支持作者"改为"支持小秘书"，文案改为随机语录
@@ -427,6 +427,40 @@
 
     // 工具函数
     class Utils {
+        // 【分组限流锁】每组接口独立控制 429 冷却时间戳
+        // 分组：session, user, leaderboard, connect, credit, cdk
+        static rateLimitUntil = {
+            session: 0,      // fetchSessionUser - /session/current.json
+            user: 0,         // fetchUserInfo + fetchUserSummary - /u/*.json
+            leaderboard: 0,  // fetchForumStats - /leaderboard/*.json
+            connect: 0,      // connect.linux.do
+            credit: 0,       // credit.linux.do
+            cdk: 0           // cdk.linux.do
+        };
+
+        // 检查指定分组是否在限流冷却期内
+        static isRateLimited(group) {
+            return Date.now() < (Utils.rateLimitUntil[group] || 0);
+        }
+
+        // 设置指定分组的限流冷却时间
+        static setRateLimit(group, retryAfterSeconds) {
+            const retryAfter = Math.max(10, retryAfterSeconds);
+            Utils.rateLimitUntil[group] = Date.now() + (retryAfter * 1000);
+            console.warn(`[LDA] 429 限流: ${group} 组冷却 ${retryAfter}s`);
+        }
+
+        // 根据 URL 判断所属分组（用于 Utils.request 跨域请求）
+        static getRateLimitGroup(url) {
+            if (url.includes('connect.linux.do')) return 'connect';
+            if (url.includes('credit.linux.do')) return 'credit';
+            if (url.includes('cdk.linux.do')) return 'cdk';
+            return null; // 同源请求在各自函数中处理
+        }
+
+        // 【排行榜独立冷却】60 秒内最多请求一次
+        static lastLeaderboardFetch = 0;
+
         static async request(url, options = {}) {
             const { retries = 3, timeout = 8000, withCredentials = false, headers = {}, ...validOptions } = options;
             const attempts = Math.max(1, retries);
@@ -455,10 +489,13 @@
                 } catch (e) {
                     // 401/403 认证错误不重试，直接抛出
                     if (e?.status === 401 || e?.status === 403) throw e;
-                    // 429 请求过多：尊重 Retry-After 或使用较长延迟，且不再重试
+                    // 429 请求过多：设置对应分组的冷却锁，不再重试
                     if (e?.status === 429) {
                         const retryAfter = parseInt(e?.responseHeaders?.match(/retry-after:\s*(\d+)/i)?.[1] || '60', 10);
-                        console.warn(`[LDA] 429 Too Many Requests, Retry-After: ${retryAfter}s, 停止重试`);
+                        const group = Utils.getRateLimitGroup(url);
+                        if (group) {
+                            Utils.setRateLimit(group, retryAfter);
+                        }
                         throw e; // 429 直接抛出，不再重试
                     }
                     lastErr = e;
@@ -468,6 +505,12 @@
                 }
             }
             throw lastErr;
+        }
+
+        // 检查跨域请求的分组限流（在发起请求前调用）
+        static isRequestRateLimited(url) {
+            const group = Utils.getRateLimitGroup(url);
+            return group ? Utils.isRateLimited(group) : false;
         }
         static get(k, d) { return GM_getValue(k, d); }
         static set(k, v) { GM_setValue(k, v); }
@@ -520,8 +563,16 @@
 
         // ✅ 新增：权威 session 登录判定（同源）
         static async fetchSessionUser() {
+            // session 分组限流检查：冷却期内返回 null（安全，不抛错）
+            if (Utils.isRateLimited('session')) return null;
             try {
                 const r = await fetch('/session/current.json', { credentials: 'include' });
+                // 429 处理：设置 session 分组锁
+                if (r.status === 429) {
+                    const retryAfter = parseInt(r.headers.get('Retry-After') || '60', 10);
+                    Utils.setRateLimit('session', retryAfter);
+                    return null;
+                }
                 if (!r.ok) return null;
                 const data = await r.json();
                 return data?.current_user || null;
@@ -654,8 +705,16 @@
         // 获取用户信息（含信任等级）- 使用同源请求更稳定
         static async fetchUserInfo(username) {
             if (!username) return null;
+            // user 分组限流检查
+            if (Utils.isRateLimited('user')) return null;
             try {
                 const r = await fetch(CONFIG.API.USER_INFO(username), { credentials: 'include' });
+                // 429 处理：设置 user 分组锁
+                if (r.status === 429) {
+                    const retryAfter = parseInt(r.headers.get('Retry-After') || '60', 10);
+                    Utils.setRateLimit('user', retryAfter);
+                    return null;
+                }
                 if (!r.ok) return null;
                 const data = await r.json();
                 return data?.user || null;
@@ -667,8 +726,16 @@
         // 获取用户 summary 数据
         static async fetchUserSummary(username) {
             if (!username) return null;
+            // user 分组限流检查（与 fetchUserInfo 共享）
+            if (Utils.isRateLimited('user')) return null;
             try {
                 const r = await fetch(CONFIG.API.USER_SUMMARY(username), { credentials: 'include' });
+                // 429 处理：设置 user 分组锁
+                if (r.status === 429) {
+                    const retryAfter = parseInt(r.headers.get('Retry-After') || '60', 10);
+                    Utils.setRateLimit('user', retryAfter);
+                    return null;
+                }
                 if (!r.ok) return null;
                 const data = await r.json();
                 return data?.user_summary || null;
@@ -690,18 +757,37 @@
 
         // 获取论坛排名数据
         static async fetchForumStats() {
+            // 60 秒独立冷却：排行榜数据更新频率低，限制请求频率
+            if (Date.now() - Utils.lastLeaderboardFetch < 60000) {
+                return { dailyRank: null, globalRank: null, score: null };
+            }
+            // leaderboard 分组限流检查
+            if (Utils.isRateLimited('leaderboard')) {
+                return { dailyRank: null, globalRank: null, score: null };
+            }
+            // 更新排行榜请求时间
+            Utils.lastLeaderboardFetch = Date.now();
+
             const baseUrl = window.location.origin;
             const fetchJson = async (url) => {
+                // 再次检查 leaderboard 分组限流（防止并行请求漏网）
+                if (Utils.isRateLimited('leaderboard')) return null;
                 let lastErr = null;
-                for (let i = 0; i < 3; i++) {
+                // 最多重试 2 次
+                for (let i = 0; i < 2; i++) {
                     const controller = new AbortController();
                     const timer = setTimeout(() => controller.abort(), 10000);
                     try {
                         const r = await fetch(url, { signal: controller.signal });
                         clearTimeout(timer);
-                        // 429 请求过多：直接返回 null，不重试
-                        if (r.status === 429) {
-                            console.warn(`[LDA] 429 Too Many Requests for ${url}, 停止重试`);
+                        // 4xx 熔断：客户端错误不重试
+                        if (r.status >= 400 && r.status < 500) {
+                            if (r.status === 429) {
+                                const retryAfter = parseInt(r.headers.get('Retry-After') || '60', 10);
+                                Utils.setRateLimit('leaderboard', retryAfter);
+                            } else {
+                                console.warn(`[LDA] fetchForumStats ${r.status}, 停止重试: ${url}`);
+                            }
                             return null;
                         }
                         if (!r.ok) throw new Error(`http ${r.status}`);
@@ -709,8 +795,8 @@
                     } catch (e) {
                         clearTimeout(timer);
                         lastErr = e;
-                        if (i === 2) return null;
-                        // 重试前等待，避免短时间内发送大量请求（指数退避：1s, 2s）
+                        if (i === 1 || Utils.isRateLimited('leaderboard')) return null;
+                        // 重试前等待（指数退避：1s）
                         await new Promise(r => setTimeout(r, 1000 * Math.pow(2, i)));
                     }
                 }
@@ -748,8 +834,16 @@
     // 在 CDK 域内只做数据桥接，不渲染面板
     const initCDKBridgePage = () => {
         const cacheAndNotify = async () => {
+            // cdk 分组限流检查
+            if (Utils.isRateLimited('cdk')) return;
             try {
                 const res = await fetch(CONFIG.API.CDK_INFO, { credentials: 'include' });
+                // 429 处理：设置 cdk 分组锁
+                if (res.status === 429) {
+                    const retryAfter = parseInt(res.headers.get('Retry-After') || '60', 10);
+                    Utils.setRateLimit('cdk', retryAfter);
+                    return;
+                }
                 if (!res.ok) return;
                 const json = await res.json();
                 if (!json?.data) return;
@@ -1786,6 +1880,9 @@
             // 拖拽状态
             this.dragItem = null;
             this.dragStartY = 0;
+            
+            // 加载状态
+            this.isLoadingMore = false;
         }
 
         // 初始化
@@ -1835,6 +1932,9 @@
             // 恢复所有隐藏的帖子
             const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
             rows.forEach(row => row.style.display = '');
+            
+            // 移除 spacer 和缓存数据
+            this.removeSpacer();
         }
 
         // 判断是否在首页
@@ -2311,6 +2411,7 @@
 
             const { LEVELS, CATEGORIES, STATE } = SIEVE_CONFIG;
             let visibleCount = 0;
+            let hiddenHeight = 0; // 记录被隐藏行的总高度
 
             const isAllLevels = this.activeLevels.length === LEVELS.length;
             const isAllCats = this.activeCats.length === CATEGORIES.length;
@@ -2385,15 +2486,219 @@
                     }
                 }
 
-                if (levelMatch && categoryMatch && tagMatch) {
+                const shouldShow = levelMatch && categoryMatch && tagMatch;
+                const isCurrentlyHidden = row.style.display === 'none';
+                
+                if (shouldShow) {
                     row.style.display = '';
                     visibleCount++;
                 } else {
+                    // 在隐藏之前测量高度（如果当前是显示状态）
+                    if (!isCurrentlyHidden) {
+                        hiddenHeight += row.offsetHeight;
+                    }
                     row.style.display = 'none';
                 }
             });
 
+            // 更新 spacer 高度以补偿被隐藏的内容
+            this.updateSpacer(hiddenHeight);
+
             return visibleCount;
+        }
+
+        // 更新/创建 spacer 元素来补偿隐藏内容的高度
+        updateSpacer(additionalHeight) {
+            const listBody = document.querySelector('.topic-list-body');
+            if (!listBody) return;
+
+            let spacer = document.getElementById('lda-sieve-spacer');
+            let loadMoreRow = document.getElementById('lda-sieve-loadmore');
+            
+            // 计算当前所有隐藏行的总高度
+            const rows = listBody.querySelectorAll('tr.topic-list-item');
+            let totalHiddenHeight = 0;
+            
+            // 使用一个固定的行高估算值（因为隐藏后无法测量）
+            const estimatedRowHeight = 55; // 估算每行高度
+            rows.forEach(row => {
+                if (row.style.display === 'none') {
+                    // 如果有缓存的高度使用缓存，否则用估算值
+                    const cachedHeight = row.dataset.ldaHeight;
+                    if (cachedHeight) {
+                        totalHiddenHeight += parseInt(cachedHeight, 10);
+                    } else {
+                        totalHiddenHeight += estimatedRowHeight;
+                    }
+                } else {
+                    // 缓存显示行的高度，供下次隐藏时使用
+                    row.dataset.ldaHeight = row.offsetHeight;
+                }
+            });
+
+            // 检查是否需要显示加载更多按钮（有筛选条件且未到底部）
+            const { LEVELS, CATEGORIES, TAGS } = SIEVE_CONFIG;
+            const isAllLevels = this.activeLevels.length === LEVELS.length;
+            const isAllCats = this.activeCats.length === CATEGORIES.length;
+            const isAllTagsNeutral = TAGS.every(t => !this.tagStates[t]);
+            const hasFilter = !(isAllLevels && isAllCats && isAllTagsNeutral);
+            const isAtBottom = this.isFooterReached();
+
+            // 创建或更新"加载更多"按钮行
+            if (hasFilter && !isAtBottom) {
+                if (!loadMoreRow) {
+                    loadMoreRow = document.createElement('tr');
+                    loadMoreRow.id = 'lda-sieve-loadmore';
+                    loadMoreRow.innerHTML = `
+                        <td colspan="99" style="padding:15px 0;text-align:center;border:none;">
+                            <button id="lda-sieve-loadmore-btn" style="
+                                padding:8px 24px;
+                                font-size:13px;
+                                font-weight:500;
+                                border:1px solid var(--tertiary, #3b82f6);
+                                border-radius:6px;
+                                background:transparent;
+                                color:var(--tertiary, #3b82f6);
+                                cursor:pointer;
+                                transition:all 0.2s;
+                            ">加载更多</button>
+                            <span id="lda-sieve-loadmore-hint" style="
+                                margin-left:10px;
+                                font-size:12px;
+                                color:var(--primary-medium, #999);
+                            "></span>
+                        </td>
+                    `;
+                    // 插入到 spacer 之前，或者列表末尾
+                    if (spacer) {
+                        listBody.insertBefore(loadMoreRow, spacer);
+                    } else {
+                        listBody.appendChild(loadMoreRow);
+                    }
+                    
+                    // 绑定点击事件
+                    const btn = loadMoreRow.querySelector('#lda-sieve-loadmore-btn');
+                    btn.addEventListener('click', () => this.handleLoadMore());
+                    btn.addEventListener('mouseenter', () => {
+                        btn.style.background = 'var(--tertiary, #3b82f6)';
+                        btn.style.color = '#fff';
+                    });
+                    btn.addEventListener('mouseleave', () => {
+                        btn.style.background = 'transparent';
+                        btn.style.color = 'var(--tertiary, #3b82f6)';
+                    });
+                }
+            } else if (loadMoreRow) {
+                // 全选状态或已到底部时移除按钮
+                loadMoreRow.remove();
+            }
+
+            // 更新 spacer
+            if (totalHiddenHeight > 0) {
+                if (!spacer) {
+                    // 创建 spacer 元素
+                    spacer = document.createElement('tr');
+                    spacer.id = 'lda-sieve-spacer';
+                    spacer.innerHTML = '<td colspan="99" style="padding:0;border:none;"></td>';
+                    spacer.style.cssText = 'display:table-row;pointer-events:none;visibility:hidden;';
+                    listBody.appendChild(spacer);
+                }
+                // 设置 spacer 高度
+                spacer.querySelector('td').style.height = totalHiddenHeight + 'px';
+            } else if (spacer) {
+                // 没有隐藏内容时移除 spacer
+                spacer.remove();
+            }
+        }
+
+        // 手动加载更多帖子
+        async handleLoadMore() {
+            if (this.isLoadingMore) return;
+            this.isLoadingMore = true;
+            
+            const btn = document.getElementById('lda-sieve-loadmore-btn');
+            const hint = document.getElementById('lda-sieve-loadmore-hint');
+            
+            // 记录加载前的可见帖子数量
+            const beforeCount = this.filterTopics();
+            
+            // 更新按钮状态
+            if (btn) {
+                btn.textContent = '加载中...';
+                btn.style.opacity = '0.6';
+                btn.style.pointerEvents = 'none';
+            }
+            if (hint) hint.textContent = '';
+            
+            // 临时移除 spacer 以触发加载
+            const spacer = document.getElementById('lda-sieve-spacer');
+            const spacerHeight = spacer?.querySelector('td')?.style.height;
+            if (spacer) spacer.querySelector('td').style.height = '0';
+            
+            // 滚动到底部触发 Discourse 加载
+            const scrollPos = window.scrollY;
+            window.scrollTo(0, document.body.scrollHeight);
+            
+            // 等待加载完成
+            await new Promise(resolve => {
+                const startTime = Date.now();
+                const check = () => {
+                    if (!this.isLoading() || Date.now() - startTime > 5000) {
+                        resolve();
+                        return;
+                    }
+                    setTimeout(check, 200);
+                };
+                setTimeout(check, 500);
+            });
+            
+            // 滚动回原位
+            window.scrollTo(0, scrollPos);
+            
+            // 重新筛选并计算新增数量
+            const afterCount = this.filterTopics();
+            const diff = afterCount - beforeCount;
+            
+            // 恢复按钮状态
+            if (btn) {
+                btn.textContent = '加载更多';
+                btn.style.opacity = '1';
+                btn.style.pointerEvents = '';
+            }
+            
+            // 显示加载结果提示
+            if (hint) {
+                if (this.isFooterReached()) {
+                    hint.textContent = '✓ 已加载全部内容';
+                    hint.style.color = '#22c55e';
+                } else if (diff > 0) {
+                    hint.textContent = `✓ 新增 ${diff} 条符合条件的帖子`;
+                    hint.style.color = '#22c55e';
+                } else {
+                    hint.textContent = '✓ 已加载，暂无新增符合条件的帖子';
+                    hint.style.color = '#f59e0b';
+                }
+                
+                // 5秒后清除提示
+                setTimeout(() => {
+                    if (hint) hint.textContent = '';
+                }, 5000);
+            }
+            
+            this.isLoadingMore = false;
+        }
+
+        // 移除 spacer 和加载按钮（销毁时调用）
+        removeSpacer() {
+            const spacer = document.getElementById('lda-sieve-spacer');
+            if (spacer) spacer.remove();
+            
+            const loadMoreRow = document.getElementById('lda-sieve-loadmore');
+            if (loadMoreRow) loadMoreRow.remove();
+            
+            // 清除缓存的高度数据
+            const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
+            rows.forEach(row => delete row.dataset.ldaHeight);
         }
 
         // 启动筛选循环
@@ -2402,7 +2707,7 @@
             this.checkInterval = setInterval(() => this.forceLoadLoop(), 1500);
         }
 
-        // 强制加载循环
+        // 筛选循环（只执行筛选，不自动滚动加载）
         forceLoadLoop() {
             if (this.isDestroyed) return;
             
@@ -2413,7 +2718,7 @@
             }
 
             const currentCount = this.filterTopics();
-            const { LEVELS, CATEGORIES, TAGS, STATE, TARGET_COUNT } = SIEVE_CONFIG;
+            const { LEVELS, CATEGORIES, TAGS } = SIEVE_CONFIG;
             
             const isAllLevels = this.activeLevels.length === LEVELS.length;
             const isAllCats = this.activeCats.length === CATEGORIES.length;
@@ -2425,23 +2730,13 @@
                 return;
             }
 
-            if (currentCount < TARGET_COUNT) {
-                if (this.isFooterReached()) {
-                    this.updateStatus(`已到底部 (${currentCount} 条)`, 'end');
-                    return;
-                }
-
-                if (this.isLoading()) {
-                    this.updateStatus(`加载中... (${currentCount} 条)`, 'loading');
-                } else {
-                    this.updateStatus(`加载更多... (${currentCount}/${TARGET_COUNT})`, 'loading');
-                    window.scrollTo(0, document.body.scrollHeight - 150);
-                    setTimeout(() => {
-                        window.scrollTo(0, document.body.scrollHeight);
-                    }, 100);
-                }
+            // 只显示筛选状态，不再自动滚动加载
+            if (this.isFooterReached()) {
+                this.updateStatus(`已加载全部 (${currentCount} 条)`, 'end');
+            } else if (this.isLoading()) {
+                this.updateStatus(`加载中... (${currentCount} 条)`, 'loading');
             } else {
-                this.updateStatus(`筛选完毕 (${currentCount} 条)`, 'done');
+                this.updateStatus(`筛选中 (${currentCount} 条)`, 'done');
             }
         }
 
@@ -2529,7 +2824,7 @@
                 useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
                 iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm'), // 小秘书图标尺寸，默认小
                 displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float'), // 显示模式：float（悬浮球）/ header（顶栏按钮）
-                sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, false), // 主页筛选工具开关，默认关闭
+                sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true), // 主页筛选工具开关，默认开启
                 fontSize: Utils.get(CONFIG.KEYS.FONT_SIZE, 100), // 字体大小百分比，默认100%
                 settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func') // 设置页子标签：func / appearance
             };
