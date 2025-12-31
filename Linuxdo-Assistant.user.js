@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.7.0
+// @version      5.8.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,11 +23,13 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.7.0
- * - 新增：主页筛选工具 - 按等级/分类/标签筛选帖子，支持预设保存和拖拽排序
- * - 新增：设置页"主页筛选工具"开关（仅在首页生效）
+ * 更新日志 v5.8.0
+ * - 优化：设置页拆分为"功能"和"外观"双标签页，减少页面长度
+ * - 新增：字体大小调节滑块（70%-130%），支持一键恢复默认
+ * - 优化：支持小秘书区域始终可见，不再被大量设置项挤到底部
  *
  * 历史更新：
+ * v5.7.0 - 新增：主页筛选工具 - 按等级/分类/标签筛选帖子，支持预设保存和拖拽排序
  * v5.6.0 - 优化：设置页"支持作者"改为"支持小秘书"，文案改为随机语录
  * v5.5.0 - 修复 Firefox 数据获取 + 顶栏按钮模式 + 注册天数显示
  * v5.4.0 - 修复悬浮球展开面板后位置偏移问题
@@ -104,7 +106,10 @@
             SIEVE_CATS: 'lda_v5_sieve_cats',
             SIEVE_TAGS: 'lda_v5_sieve_tags',
             SIEVE_PRESETS: 'lda_v5_sieve_presets',
-            SIEVE_PRESET_ORDER: 'lda_v5_sieve_preset_order'
+            SIEVE_PRESET_ORDER: 'lda_v5_sieve_preset_order',
+            // 字体大小
+            FONT_SIZE: 'lda_v5_font_size',
+            SETTING_SUB_TAB: 'lda_v5_setting_sub_tab'
         }
     };
 
@@ -263,7 +268,12 @@
             sieve_status_done: "筛选完毕",
             sieve_status_end: "已到底部",
             sieve_no_preset: "暂无预设",
-            sieve_tip: "仅在首页生效"
+            sieve_tip: "仅在首页生效",
+            // 设置页分类
+            set_func: "功能",
+            set_appearance: "外观",
+            set_font_size: "字体大小",
+            font_size_reset: "重置"
         },
         en: {
             title: "Linux.do HUD",
@@ -402,7 +412,12 @@
             sieve_status_done: "Done",
             sieve_status_end: "End of list",
             sieve_no_preset: "No presets",
-            sieve_tip: "Homepage only"
+            sieve_tip: "Homepage only",
+            // Settings sub-tabs
+            set_func: "Functions",
+            set_appearance: "Appearance",
+            set_font_size: "Font Size",
+            font_size_reset: "Reset"
         }
     };
 
@@ -758,6 +773,7 @@
             --lda-green: #22c55e;
             --lda-neutral: rgba(125,125,125,0.25);
             --lda-font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            --lda-font-scale: 1;
         }
         .lda-dark {
             --lda-bg: rgba(15, 23, 42, 0.94);
@@ -925,7 +941,17 @@
             border: var(--lda-border); border-radius: var(--lda-rad); box-shadow: var(--lda-shadow);
             display: none; flex-direction: column; overflow: hidden; margin-top: 0;
             transform-origin: top right; animation: lda-in 0.25s cubic-bezier(0.2, 0.8, 0.2, 1);
+            font-size: calc(14px * var(--lda-font-scale, 1));
         }
+        .lda-panel * { font-size: inherit; }
+        .lda-panel .lda-title { font-size: calc(13px * var(--lda-font-scale, 1)); }
+        .lda-panel .lda-tab { font-size: calc(12px * var(--lda-font-scale, 1)); }
+        .lda-panel .lda-credit-num { font-size: calc(24px * var(--lda-font-scale, 1)); }
+        .lda-panel .lda-opt-label { font-size: calc(12px * var(--lda-font-scale, 1)); }
+        .lda-panel .lda-seg-item { font-size: calc(11px * var(--lda-font-scale, 1)); }
+        .lda-panel .lda-support-title { font-size: calc(13px * var(--lda-font-scale, 1)); }
+        .lda-panel .lda-support-desc { font-size: calc(10px * var(--lda-font-scale, 1)); }
+        .lda-panel .lda-support-amount { font-size: calc(12px * var(--lda-font-scale, 1)); }
         #lda-root.lda-side-right .lda-panel { left: 0; right: auto; transform-origin: top left; }
         #lda-root.lda-side-left .lda-panel { right: 0; left: auto; transform-origin: top right; }
         @keyframes lda-in { from { opacity: 0; transform: scale(0.92) translateY(-10px); } to { opacity: 1; transform: scale(1) translateY(0); } }
@@ -1262,6 +1288,58 @@
             font-size: 12px; font-weight: 700; color: var(--card-accent, var(--lda-accent));
         }
         .lda-support-unit { font-size: 9px; color: var(--lda-dim); margin-top: 1px; }
+
+        /* 设置页子标签 */
+        .lda-sub-tabs {
+            display: flex; gap: 0; margin-bottom: 12px;
+            border-radius: 8px; overflow: hidden;
+            border: 1px solid var(--lda-border);
+        }
+        .lda-sub-tab {
+            flex: 1; padding: 8px 12px; font-size: 12px; font-weight: 500;
+            text-align: center; cursor: pointer; transition: all 0.2s;
+            background: transparent; color: var(--lda-dim);
+            border: none; outline: none;
+        }
+        .lda-sub-tab:first-child { border-right: 1px solid var(--lda-border); }
+        .lda-sub-tab:hover { background: rgba(125,125,125,0.08); }
+        .lda-sub-tab.active {
+            background: var(--lda-accent); color: #fff;
+        }
+        .lda-sub-page { display: none; animation: lda-fade 0.2s; }
+        .lda-sub-page.active { display: block; }
+
+        /* 字体大小调节 */
+        .lda-font-row {
+            display: flex; align-items: center; gap: 10px;
+        }
+        .lda-font-slider {
+            flex: 1; height: 4px; -webkit-appearance: none; appearance: none;
+            background: rgba(125,125,125,0.2); border-radius: 2px; outline: none;
+        }
+        .lda-font-slider::-webkit-slider-thumb {
+            -webkit-appearance: none; width: 16px; height: 16px;
+            background: var(--lda-accent); border-radius: 50%; cursor: pointer;
+            transition: transform 0.15s;
+        }
+        .lda-font-slider::-webkit-slider-thumb:hover { transform: scale(1.1); }
+        .lda-font-slider::-moz-range-thumb {
+            width: 16px; height: 16px; background: var(--lda-accent);
+            border-radius: 50%; cursor: pointer; border: none;
+        }
+        .lda-font-val {
+            min-width: 40px; text-align: center; font-size: 12px;
+            font-weight: 600; color: var(--lda-fg);
+        }
+        .lda-font-reset {
+            padding: 4px 8px; font-size: 11px; border-radius: 4px;
+            border: 1px solid var(--lda-border); background: transparent;
+            color: var(--lda-dim); cursor: pointer; transition: all 0.2s;
+        }
+        .lda-font-reset:hover {
+            border-color: var(--lda-accent); color: var(--lda-accent);
+        }
+
         /* 慢速提示 */
         .lda-slow-tip {
             display: none;
@@ -2426,7 +2504,9 @@
                 useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
                 iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm'), // 小秘书图标尺寸，默认小
                 displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float'), // 显示模式：float（悬浮球）/ header（顶栏按钮）
-                sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true) // 主页筛选工具开关，默认开启
+                sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true), // 主页筛选工具开关，默认开启
+                fontSize: Utils.get(CONFIG.KEYS.FONT_SIZE, 100), // 字体大小百分比，默认100%
+                settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func') // 设置页子标签：func / appearance
             };
             this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
@@ -2478,6 +2558,7 @@
             this.applyTheme();
             this.applyHeight();
             this.applyOpacity();
+            this.applyFontSize();
             // 顶栏模式不需要恢复位置和计算面板方向
             if (!isHeaderMode) {
                 this.restorePos();
@@ -2624,10 +2705,11 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode, sieveEnabled } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode, sieveEnabled, fontSize, settingSubTab } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
+            const fontSizeVal = Math.max(70, Math.min(130, Number(fontSize) || 100));
 
             // 标签名称映射
             const tabNames = {
@@ -2662,82 +2744,107 @@
                 </a>
             `).join('');
 
-            // ✅ 隐藏“清除缓存”功能入口：不再渲染按钮（保留内部逻辑以备将来启用）
+            // 子标签状态
+            const subTabFunc = settingSubTab === 'func' ? 'active' : '';
+            const subTabAppearance = settingSubTab === 'appearance' ? 'active' : '';
+
             this.dom.setting.innerHTML = Utils.html`
-                <div class="lda-card">
-                    <div class="lda-opt" style="flex-wrap:wrap;">
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand ? 'checked' : ''}><span class="lda-slider"></span></label>
-                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_auto')}</div>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <label class="lda-switch"><input type="checkbox" id="inp-gain-anim" ${gainAnim ? 'checked' : ''}><span class="lda-slider"></span></label>
-                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_gain_anim')}</div>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <label class="lda-switch"><input type="checkbox" id="inp-classic-icon" ${useClassicIcon ? 'checked' : ''}><span class="lda-slider"></span></label>
-                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_classic_icon')}</div>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <label class="lda-switch"><input type="checkbox" id="inp-header-mode" ${displayMode === 'header' ? 'checked' : ''}><span class="lda-slider"></span></label>
-                            <div class="lda-opt-label" style="font-size:12px">${displayMode === 'header' ? this.t('set_show_float_icon') : this.t('set_show_header_btn')}</div>
-                        </div>
-                        <div style="display:flex;align-items:center;gap:8px;">
-                            <label class="lda-switch"><input type="checkbox" id="inp-sieve-enabled" ${sieveEnabled ? 'checked' : ''}><span class="lda-slider"></span></label>
-                            <div class="lda-opt-label" style="font-size:12px">${this.t('set_sieve')}</div>
-                            <span style="font-size:10px;color:var(--lda-dim);opacity:0.7;">${this.t('sieve_tip')}</span>
-                        </div>
-                    </div>
-                    <div class="lda-opt" id="lda-icon-size-opt" style="${useClassicIcon ? 'display:none;' : ''}">
-                        <div class="lda-opt-label">${this.t('set_icon_size')}</div>
-                        <div class="lda-seg" id="grp-icon-size">
-                            <div class="lda-seg-item ${r('sm', iconSize)}" data-v="sm">${this.t('icon_size_sm')}</div>
-                            <div class="lda-seg-item ${r('md', iconSize)}" data-v="md">${this.t('icon_size_md')}</div>
-                            <div class="lda-seg-item ${r('lg', iconSize)}" data-v="lg">${this.t('icon_size_lg')}</div>
-                        </div>
-                    </div>
-                    <div class="lda-opt">
-                        <div class="lda-seg" id="grp-lang">
-                            <div class="lda-seg-item ${r('zh', lang)}" data-v="zh">中文</div>
-                            <div class="lda-seg-item ${r('en', lang)}" data-v="en">EN</div>
-                        </div>
-                    </div>
-                    <div class="lda-opt">
-                        <div class="lda-opt-label">${this.t('set_size')}</div>
-                        <div class="lda-opt-right">
-                            <div class="lda-seg" id="grp-size">
-                                <div class="lda-seg-item ${r('sm', height)}" data-v="sm">${this.t('size_sm')}</div>
-                                <div class="lda-seg-item ${r('lg', height)}" data-v="lg">${this.t('size_lg')}</div>
-                                <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
+                <div class="lda-sub-tabs">
+                    <div class="lda-sub-tab ${subTabFunc}" data-subtab="func">${this.t('set_func')}</div>
+                    <div class="lda-sub-tab ${subTabAppearance}" data-subtab="appearance">${this.t('set_appearance')}</div>
+                </div>
+                <div class="lda-sub-page ${subTabFunc}" id="sub-page-func">
+                    <div class="lda-card">
+                        <div class="lda-opt" style="flex-wrap:wrap;gap:12px 20px;">
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <label class="lda-switch"><input type="checkbox" id="inp-expand" ${expand ? 'checked' : ''}><span class="lda-slider"></span></label>
+                                <span style="font-size:12px">${this.t('set_auto')}</span>
                             </div>
-                            <div class="lda-opacity-row">
-                                <span class="lda-opt-sub">${this.t('set_opacity')}</span>
-                                <input type="range" min="0.5" max="1" step="0.05" value="${opacityVal}" id="inp-opacity" class="lda-range">
-                                <span id="val-opacity">${opacityPercent}%</span>
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <label class="lda-switch"><input type="checkbox" id="inp-gain-anim" ${gainAnim ? 'checked' : ''}><span class="lda-slider"></span></label>
+                                <span style="font-size:12px">${this.t('set_gain_anim')}</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <label class="lda-switch"><input type="checkbox" id="inp-sieve-enabled" ${sieveEnabled ? 'checked' : ''}><span class="lda-slider"></span></label>
+                                <span style="font-size:12px">${this.t('set_sieve')}</span>
+                                <span style="font-size:9px;color:var(--lda-dim);opacity:0.7;">${this.t('sieve_tip')}</span>
                             </div>
                         </div>
+                        <div class="lda-opt">
+                            <div>
+                                <div class="lda-opt-label">${this.t('set_refresh')}</div>
+                                <div style="font-size:10px;color:var(--lda-dim);margin-top:2px;">${this.t('refresh_tip')}</div>
+                            </div>
+                            <div class="lda-seg" id="grp-refresh">
+                                <div class="lda-seg-item ${r(30, refreshInterval)}" data-v="30">${this.t('refresh_30')}</div>
+                                <div class="lda-seg-item ${r(60, refreshInterval)}" data-v="60">${this.t('refresh_60')}</div>
+                                <div class="lda-seg-item ${r(120, refreshInterval)}" data-v="120">${this.t('refresh_120')}</div>
+                                <div class="lda-seg-item ${r(0, refreshInterval)}" data-v="0">${this.t('refresh_off')}</div>
+                            </div>
+                        </div>
+                        <div class="lda-opt" style="flex-direction:column; align-items:stretch;">
+                            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                                <div class="lda-opt-label">${this.t('set_tab_order')}</div>
+                                <span style="font-size:10px; color:var(--lda-dim)">${this.t('tab_order_tip')}</span>
+                            </div>
+                            <div class="lda-sortable" id="sortable-tabs">
+                                ${sortItemsHtml}
+                            </div>
+                            <button class="lda-sort-btn" id="btn-save-order">${this.t('tab_order_save')}</button>
+                        </div>
                     </div>
-                    <div class="lda-opt">
-                        <div>
-                            <div class="lda-opt-label">${this.t('set_refresh')}</div>
-                            <div style="font-size:11px;color:var(--lda-dim);margin-top:4px;">${this.t('refresh_tip')}</div>
+                </div>
+                <div class="lda-sub-page ${subTabAppearance}" id="sub-page-appearance">
+                    <div class="lda-card">
+                        <div class="lda-opt" style="flex-wrap:wrap;gap:12px 20px;">
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <label class="lda-switch"><input type="checkbox" id="inp-classic-icon" ${useClassicIcon ? 'checked' : ''}><span class="lda-slider"></span></label>
+                                <span style="font-size:12px">${this.t('set_classic_icon')}</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <label class="lda-switch"><input type="checkbox" id="inp-header-mode" ${displayMode === 'header' ? 'checked' : ''}><span class="lda-slider"></span></label>
+                                <span style="font-size:12px">${displayMode === 'header' ? this.t('set_show_float_icon') : this.t('set_show_header_btn')}</span>
+                            </div>
                         </div>
-                        <div class="lda-seg" id="grp-refresh">
-                            <div class="lda-seg-item ${r(30, refreshInterval)}" data-v="30">${this.t('refresh_30')}</div>
-                            <div class="lda-seg-item ${r(60, refreshInterval)}" data-v="60">${this.t('refresh_60')}</div>
-                            <div class="lda-seg-item ${r(120, refreshInterval)}" data-v="120">${this.t('refresh_120')}</div>
-                            <div class="lda-seg-item ${r(0, refreshInterval)}" data-v="0">${this.t('refresh_off')}</div>
+                        <div class="lda-opt" style="flex-wrap:wrap;gap:10px;">
+                            <div id="lda-icon-size-opt" style="display:flex;align-items:center;gap:8px;${useClassicIcon ? 'display:none;' : ''}">
+                                <span style="font-size:12px;color:var(--lda-dim);">${this.t('set_icon_size')}</span>
+                                <div class="lda-seg" id="grp-icon-size">
+                                    <div class="lda-seg-item ${r('sm', iconSize)}" data-v="sm">${this.t('icon_size_sm')}</div>
+                                    <div class="lda-seg-item ${r('md', iconSize)}" data-v="md">${this.t('icon_size_md')}</div>
+                                    <div class="lda-seg-item ${r('lg', iconSize)}" data-v="lg">${this.t('icon_size_lg')}</div>
+                                </div>
+                            </div>
+                            <div class="lda-seg" id="grp-lang">
+                                <div class="lda-seg-item ${r('zh', lang)}" data-v="zh">中文</div>
+                                <div class="lda-seg-item ${r('en', lang)}" data-v="en">EN</div>
+                            </div>
                         </div>
-                    </div>
-                    <div class="lda-opt" style="flex-direction:column; align-items:stretch;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                            <div class="lda-opt-label">${this.t('set_tab_order')}</div>
-                            <span style="font-size:10px; color:var(--lda-dim)">${this.t('tab_order_tip')}</span>
+                        <div class="lda-opt">
+                            <div class="lda-opt-label">${this.t('set_size')}</div>
+                            <div class="lda-opt-right">
+                                <div class="lda-seg" id="grp-size">
+                                    <div class="lda-seg-item ${r('sm', height)}" data-v="sm">${this.t('size_sm')}</div>
+                                    <div class="lda-seg-item ${r('lg', height)}" data-v="lg">${this.t('size_lg')}</div>
+                                    <div class="lda-seg-item ${r('auto', height)}" data-v="auto">${this.t('size_auto')}</div>
+                                </div>
+                                <div class="lda-opacity-row">
+                                    <span class="lda-opt-sub">${this.t('set_opacity')}</span>
+                                    <input type="range" min="0.5" max="1" step="0.05" value="${opacityVal}" id="inp-opacity" class="lda-range">
+                                    <span id="val-opacity">${opacityPercent}%</span>
+                                </div>
+                            </div>
                         </div>
-                        <div class="lda-sortable" id="sortable-tabs">
-                            ${sortItemsHtml}
+                        <div class="lda-opt">
+                            <span style="font-size:12px;white-space:nowrap;">${this.t('set_font_size')}</span>
+                            <div class="lda-font-row" style="flex:1;">
+                                <input type="range" min="70" max="130" step="5" value="${fontSizeVal}" id="inp-font-size" class="lda-font-slider">
+                                <div style="display:flex;flex-direction:column;align-items:center;gap:2px;">
+                                    <span id="val-font-size" class="lda-font-val">${fontSizeVal}%</span>
+                                    <button id="btn-font-reset" class="lda-font-reset">${this.t('font_size_reset')}</button>
+                                </div>
+                            </div>
                         </div>
-                        <button class="lda-sort-btn" id="btn-save-order">${this.t('tab_order_save')}</button>
                     </div>
                 </div>
                 <div class="lda-support">
@@ -2760,6 +2867,7 @@
             `;
 
             this.initSortable();
+            this.bindSettingSubTabs();
         }
 
         initSortable() {
@@ -2960,6 +3068,71 @@
             };
         }
 
+        bindSettingSubTabs() {
+            const subTabs = Utils.els('.lda-sub-tab', this.dom.setting);
+            const subPages = Utils.els('.lda-sub-page', this.dom.setting);
+
+            subTabs.forEach(tab => {
+                tab.onclick = (e) => {
+                    e.stopPropagation();
+                    const target = tab.dataset.subtab;
+                    if (target === this.state.settingSubTab) return;
+
+                    // 更新状态
+                    this.state.settingSubTab = target;
+                    Utils.set(CONFIG.KEYS.SETTING_SUB_TAB, target);
+
+                    // 更新 UI
+                    subTabs.forEach(t => t.classList.remove('active'));
+                    subPages.forEach(p => p.classList.remove('active'));
+                    tab.classList.add('active');
+                    const page = Utils.el(`#sub-page-${target}`, this.dom.setting);
+                    if (page) page.classList.add('active');
+
+                    // 如果切换到功能设置，重新绑定排序事件（因为可能已经失效）
+                    if (target === 'func') {
+                        this.initSortable();
+                    }
+                };
+            });
+
+            // 字体大小调节
+            const fontSlider = Utils.el('#inp-font-size', this.dom.setting);
+            const fontVal = Utils.el('#val-font-size', this.dom.setting);
+            const fontResetBtn = Utils.el('#btn-font-reset', this.dom.setting);
+
+            if (fontSlider) {
+                fontSlider.oninput = (e) => {
+                    e.stopPropagation();
+                    const val = Math.max(70, Math.min(130, Number(e.target.value) || 100));
+                    this.state.fontSize = val;
+                    Utils.set(CONFIG.KEYS.FONT_SIZE, val);
+                    if (fontVal) fontVal.textContent = `${val}%`;
+                    this.applyFontSize();
+                };
+            }
+
+            if (fontResetBtn) {
+                fontResetBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    this.state.fontSize = 100;
+                    Utils.set(CONFIG.KEYS.FONT_SIZE, 100);
+                    if (fontSlider) fontSlider.value = 100;
+                    if (fontVal) fontVal.textContent = '100%';
+                    this.applyFontSize();
+                };
+            }
+        }
+
+        applyFontSize() {
+            const size = this.state.fontSize || 100;
+            const root = this.dom.root;
+            if (root) {
+                // 使用 CSS 变量控制全局字体缩放
+                root.style.setProperty('--lda-font-scale', size / 100);
+            }
+        }
+
         bindGlobalEvents() {
             Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
             Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate({ isAuto: false, force: true }); };
@@ -3020,7 +3193,7 @@
                     // 切换图标尺寸选项的显示/隐藏
                     const iconSizeOpt = Utils.el('#lda-icon-size-opt', this.dom.setting);
                     if (iconSizeOpt) {
-                        iconSizeOpt.style.display = e.target.checked ? 'none' : '';
+                        iconSizeOpt.style.display = e.target.checked ? 'none' : 'flex';
                     }
                     // 如果切换到小秘书模式且没有缓存，重新加载图标
                     if (!e.target.checked && !this.iconCache) {
