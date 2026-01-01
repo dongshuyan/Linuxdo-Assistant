@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.15.0
+// @version      5.16.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,11 +23,11 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.15.0
- * - 文档：新增 API 接口调用与频率限制分析文档
- * - 文档：README 增加完整功能说明、设置详解、docs 文档链接
+ * 更新日志 v5.16.0
+ * - 调整：「显示每日排名」设置默认改为开启
  *
  * 历史更新：
+ * v5.15.0 - 新增 API 接口调用与频率限制分析文档，README 增加完整功能说明
  * v5.14.0 - 修复内存泄漏问题，MutationObserver 添加防抖机制，筛选工具添加变化检测
  * v5.13.0 - 长按悬浮球/顶栏按钮快速返回帖子1楼、自动展开面板默认关闭
  * v5.12.0 - 修复筛选工具无限刷新、新增加载更多按钮
@@ -3096,7 +3096,7 @@
                 sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true), // 主页筛选工具开关，默认开启
                 fontSize: Utils.get(CONFIG.KEYS.FONT_SIZE, 100), // 字体大小百分比，默认100%
                 settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func'), // 设置页子标签：func / appearance
-                showDailyRank: Utils.get(CONFIG.KEYS.SHOW_DAILY_RANK, false) // 显示每日排名，默认关闭
+                showDailyRank: Utils.get(CONFIG.KEYS.SHOW_DAILY_RANK, true) // 显示每日排名，默认开启
             };
             this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
