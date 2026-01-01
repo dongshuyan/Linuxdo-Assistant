@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.14.0
+// @version      5.14.1
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -112,10 +112,22 @@
             SIEVE_PRESET_ORDER: 'lda_v5_sieve_preset_order',
             // 限流锁持久化
             RATE_LIMIT: 'lda_v5_rate_limit',
+            // 排行榜上次请求时间戳（跨标签页共享）
+            LEADERBOARD_LAST_FETCH: 'lda_v5_leaderboard_last_fetch',
             // 字体大小
             FONT_SIZE: 'lda_v5_font_size',
-            SETTING_SUB_TAB: 'lda_v5_setting_sub_tab'
+            SETTING_SUB_TAB: 'lda_v5_setting_sub_tab',
+            // 是否显示每日排名（控制 Leaderboard 请求）
+            SHOW_DAILY_RANK: 'lda_v5_show_daily_rank',
+            // 请求频率限制（硬限制，每分钟最多 N 次，跨标签页持久化）
+            REQUEST_TIMESTAMPS: 'lda_v5_request_timestamps'
         }
+    };
+
+    // 请求频率限制配置（每分钟最多 3 次请求）
+    const REQUEST_LIMIT = {
+        MAX_REQUESTS_PER_MINUTE: 3,
+        WINDOW_MS: 60 * 1000  // 1 分钟窗口
     };
 
     // 小秘书图标尺寸配置
@@ -196,14 +208,15 @@
             refresh_tip_btn: "刷新数据",
             refresh_done: "刷新完毕",
             refresh_no_data: "未获取到数据",
+            rate_limit_exceeded: "请求频率过高，请稍后再试",
             check_update: "检查更新",
             checking: "检查中...",
             new_version: "发现新版本",
             latest: "已是最新",
             update_err: "检查失败",
-            rank: "总排名",
-            rank_today: "今日",
-            score: "积分",
+            rank_today: "今日排名",
+            score: "今日积分",
+            set_show_daily_rank: "显示每日排名",
             member_days: "注册天数",
             credit_not_auth: "尚未登录 Credit",
             credit_auth_tip: "需先完成授权才能查看积分数据",
@@ -344,14 +357,15 @@
             refresh_tip_btn: "Refresh",
             refresh_done: "Refreshed",
             refresh_no_data: "No data available",
+            rate_limit_exceeded: "Too many requests, please try again later",
             check_update: "Check Update",
             checking: "Checking...",
             new_version: "New Version",
             latest: "Up to date",
             update_err: "Check failed",
-            rank: "Rank",
             rank_today: "Today",
-            score: "Score",
+            score: "Today Score",
+            set_show_daily_rank: "Show Daily Rank",
             member_days: "Days",
             credit_not_auth: "Credit Not Logged In",
             credit_auth_tip: "Please authorize to view credit data",
@@ -439,7 +453,7 @@
         // 初始化时从存储中恢复限流状态，支持跨页面/刷新持久化
         static rateLimitUntil = (() => {
             const defaultVal = {
-                session: 0,      // fetchSessionUser - /session/current.json
+                session: 0,      // fetchSessionUser - /session/current
                 user: 0,         // fetchUserInfo + fetchUserSummary - /u/*.json
                 leaderboard: 0,  // fetchForumStats - /leaderboard/*.json
                 connect: 0,      // connect.linux.do
@@ -485,13 +499,121 @@
             return null; // 同源请求在各自函数中处理
         }
 
-        // 【排行榜独立冷却】60 秒内最多请求一次
-        static lastLeaderboardFetch = 0;
+        // 【排行榜独立冷却】60 秒内最多请求一次（跨标签页共享，持久化存储）
+        static lastLeaderboardFetch = (() => {
+            try {
+                const saved = GM_getValue(CONFIG.KEYS.LEADERBOARD_LAST_FETCH, 0);
+                return typeof saved === 'number' ? saved : 0;
+            } catch (_) { return 0; }
+        })();
+
+        // 全局 Toast 回调（由 App 实例设置）
+        static showToastCallback = null;
+        static setShowToastCallback(callback) {
+            Utils.showToastCallback = callback;
+        }
+        static showGlobalToast(message, type = 'warning', duration = 3000) {
+            if (Utils.showToastCallback) {
+                Utils.showToastCallback(message, type, duration);
+            }
+        }
+
+        // 【请求频率硬限制】每分钟最多 N 次请求（跨标签页持久化，手动刷新也无法绕过）
+        // 存储结构: { group: [timestamp1, timestamp2, ...] }
+        static requestTimestamps = (() => {
+            const defaultVal = {
+                session: [],
+                user: [],
+                leaderboard: [],
+                connect: [],
+                credit: [],
+                cdk: []
+            };
+            try {
+                const saved = GM_getValue(CONFIG.KEYS.REQUEST_TIMESTAMPS, null);
+                if (saved && typeof saved === 'object') {
+                    const now = Date.now();
+                    const windowMs = REQUEST_LIMIT.WINDOW_MS;
+                    // 恢复并清理过期的时间戳
+                    Object.keys(defaultVal).forEach(k => {
+                        if (Array.isArray(saved[k])) {
+                            defaultVal[k] = saved[k].filter(ts => now - ts < windowMs);
+                        }
+                    });
+                }
+            } catch (_) { /* 忽略读取错误 */ }
+            return defaultVal;
+        })();
+
+        // 检查指定分组是否超过请求频率限制（最高优先级，不可绕过）
+        static isRequestLimitExceeded(group) {
+            const now = Date.now();
+            const windowMs = REQUEST_LIMIT.WINDOW_MS;
+            const maxRequests = REQUEST_LIMIT.MAX_REQUESTS_PER_MINUTE;
+            
+            // 从持久化存储重新读取（确保跨标签页同步）
+            try {
+                const saved = GM_getValue(CONFIG.KEYS.REQUEST_TIMESTAMPS, null);
+                if (saved && Array.isArray(saved[group])) {
+                    Utils.requestTimestamps[group] = saved[group].filter(ts => now - ts < windowMs);
+                }
+            } catch (_) { /* 忽略读取错误 */ }
+            
+            // 清理过期时间戳
+            Utils.requestTimestamps[group] = (Utils.requestTimestamps[group] || []).filter(ts => now - ts < windowMs);
+            
+            return Utils.requestTimestamps[group].length >= maxRequests;
+        }
+
+        // 记录请求时间戳（在实际发送请求前调用）
+        static recordRequest(group) {
+            const now = Date.now();
+            const windowMs = REQUEST_LIMIT.WINDOW_MS;
+            
+            // 清理过期时间戳并添加新的
+            Utils.requestTimestamps[group] = (Utils.requestTimestamps[group] || []).filter(ts => now - ts < windowMs);
+            Utils.requestTimestamps[group].push(now);
+            
+            // 持久化存储
+            try {
+                GM_setValue(CONFIG.KEYS.REQUEST_TIMESTAMPS, { ...Utils.requestTimestamps });
+            } catch (_) { /* 忽略写入错误 */ }
+        }
+
+        // 获取下次可请求的等待时间（秒）
+        static getRequestWaitTime(group) {
+            const now = Date.now();
+            const windowMs = REQUEST_LIMIT.WINDOW_MS;
+            const maxRequests = REQUEST_LIMIT.MAX_REQUESTS_PER_MINUTE;
+            
+            const timestamps = (Utils.requestTimestamps[group] || []).filter(ts => now - ts < windowMs);
+            if (timestamps.length < maxRequests) return 0;
+            
+            // 找到最早的时间戳，计算还需等待多久
+            const oldest = Math.min(...timestamps);
+            return Math.ceil((oldest + windowMs - now) / 1000);
+        }
 
         static async request(url, options = {}) {
+            // 【最高优先级】请求频率硬限制检查（根据 URL 判断分组）
+            const group = Utils.getRateLimitGroup(url);
+            if (group && Utils.isRequestLimitExceeded(group)) {
+                const waitTime = Utils.getRequestWaitTime(group);
+                console.warn(`[LDA] ${group} 请求频率超限，请 ${waitTime}s 后再试`);
+                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                const err = new Error(`请求频率超限，请 ${waitTime}s 后再试`);
+                err.rateLimitExceeded = true;
+                err.waitTime = waitTime;
+                throw err;
+            }
+            
             const { retries = 3, timeout = 8000, withCredentials = false, headers = {}, ...validOptions } = options;
             const attempts = Math.max(1, retries);
             let lastErr;
+            
+            // 记录请求时间戳（在实际发送请求前）
+            if (group) Utils.recordRequest(group);
+            
             for (let i = 0; i < attempts; i++) {
                 try {
                     const res = await new Promise((resolve, reject) => {
@@ -590,10 +712,27 @@
 
         // ✅ 新增：权威 session 登录判定（同源）
         static async fetchSessionUser() {
+            // 【最高优先级】请求频率硬限制检查（每分钟最多3次，不可绕过）
+            if (Utils.isRequestLimitExceeded('session')) {
+                const waitTime = Utils.getRequestWaitTime('session');
+                console.warn(`[LDA] session 请求频率超限，请 ${waitTime}s 后再试`);
+                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                return null;
+            }
             // session 分组限流检查：冷却期内返回 null（安全，不抛错）
             if (Utils.isRateLimited('session')) return null;
+            // 记录请求时间戳
+            Utils.recordRequest('session');
             try {
-                const r = await fetch('/session/current.json', { credentials: 'include' });
+                const r = await fetch('/session/current', {
+                    credentials: 'include',
+                    headers: {
+                        'Accept': 'application/json',
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Discourse-Logged-In': 'true',
+                        'Discourse-Present': 'true'
+                    }
+                });
                 // 429 处理：设置 session 分组锁
                 if (r.status === 429) {
                     const retryAfter = parseInt(r.headers.get('Retry-After') || '60', 10);
@@ -732,8 +871,17 @@
         // 获取用户信息（含信任等级）- 使用同源请求更稳定
         static async fetchUserInfo(username) {
             if (!username) return null;
+            // 【最高优先级】请求频率硬限制检查（每分钟最多3次，不可绕过）
+            if (Utils.isRequestLimitExceeded('user')) {
+                const waitTime = Utils.getRequestWaitTime('user');
+                console.warn(`[LDA] user 请求频率超限，请 ${waitTime}s 后再试`);
+                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                return null;
+            }
             // user 分组限流检查
             if (Utils.isRateLimited('user')) return null;
+            // 记录请求时间戳
+            Utils.recordRequest('user');
             try {
                 const r = await fetch(CONFIG.API.USER_INFO(username), { credentials: 'include' });
                 // 429 处理：设置 user 分组锁
@@ -753,8 +901,17 @@
         // 获取用户 summary 数据
         static async fetchUserSummary(username) {
             if (!username) return null;
+            // 【最高优先级】请求频率硬限制检查（与 fetchUserInfo 共享，每分钟最多3次）
+            if (Utils.isRequestLimitExceeded('user')) {
+                const waitTime = Utils.getRequestWaitTime('user');
+                console.warn(`[LDA] user 请求频率超限，请 ${waitTime}s 后再试`);
+                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                return null;
+            }
             // user 分组限流检查（与 fetchUserInfo 共享）
             if (Utils.isRateLimited('user')) return null;
+            // 记录请求时间戳
+            Utils.recordRequest('user');
             try {
                 const r = await fetch(CONFIG.API.USER_SUMMARY(username), { credentials: 'include' });
                 // 429 处理：设置 user 分组锁
@@ -782,21 +939,33 @@
             return remainMins > 0 ? `${hours}小时${remainMins}分` : `${hours}小时`;
         }
 
-        // 获取论坛排名数据
+        // 获取论坛排名数据（仅每日排名）
         static async fetchForumStats() {
+            // 【最高优先级】请求频率硬限制检查（每分钟最多3次，不可绕过）
+            if (Utils.isRequestLimitExceeded('leaderboard')) {
+                const waitTime = Utils.getRequestWaitTime('leaderboard');
+                console.warn(`[LDA] leaderboard 请求频率超限，请 ${waitTime}s 后再试`);
+                Utils.showGlobalToast(`请求频率过高，请 ${waitTime}s 后再试`, 'warning', 3000);
+                return { dailyRank: null, score: null };
+            }
             // 60 秒独立冷却：排行榜数据更新频率低，限制请求频率
             if (Date.now() - Utils.lastLeaderboardFetch < 60000) {
-                return { dailyRank: null, globalRank: null, score: null };
+                return { dailyRank: null, score: null };
             }
             // leaderboard 分组限流检查
             if (Utils.isRateLimited('leaderboard')) {
-                return { dailyRank: null, globalRank: null, score: null };
+                return { dailyRank: null, score: null };
             }
-            // 更新排行榜请求时间
+            // 记录请求时间戳
+            Utils.recordRequest('leaderboard');
+            // 更新排行榜请求时间（持久化存储，跨标签页共享）
             Utils.lastLeaderboardFetch = Date.now();
+            try {
+                GM_setValue(CONFIG.KEYS.LEADERBOARD_LAST_FETCH, Utils.lastLeaderboardFetch);
+            } catch (_) { /* 忽略写入错误 */ }
 
             const baseUrl = window.location.origin;
-            const fetchJson = async (url) => {
+            const fetchLeaderboard = async (url) => {
                 // 再次检查 leaderboard 分组限流（防止并行请求漏网）
                 if (Utils.isRateLimited('leaderboard')) return null;
                 let lastErr = null;
@@ -805,7 +974,16 @@
                     const controller = new AbortController();
                     const timer = setTimeout(() => controller.abort(), 10000);
                     try {
-                        const r = await fetch(url, { signal: controller.signal });
+                        // 使用 Discourse 友好的请求方式，避免 429 限流
+                        const r = await fetch(url, {
+                            signal: controller.signal,
+                            headers: {
+                                'Accept': 'application/json',
+                                'X-Requested-With': 'XMLHttpRequest',
+                                'Discourse-Logged-In': 'true',
+                                'Discourse-Present': 'true'
+                            }
+                        });
                         clearTimeout(timer);
                         // 4xx 熔断：客户端错误不重试
                         if (r.status >= 400 && r.status < 500) {
@@ -830,25 +1008,16 @@
                 return null;
             };
             try {
-                const [daily, global] = await Promise.all([
-                    fetchJson(CONFIG.API.LEADERBOARD_DAILY),
-                    fetchJson(CONFIG.API.LEADERBOARD)
-                ]);
+                // 只请求每日排行榜，使用不带 .json 后缀的 URL
+                const daily = await fetchLeaderboard(`${baseUrl}/leaderboard/1?period=daily`);
                 // 尝试从 leaderboard 获取积分
-                let score = global?.personal?.total_score || global?.personal?.score || null;
-                // 如果没有积分，尝试从用户 API 获取
-                if (!score && global?.personal?.user?.username) {
-                    const username = global.personal.user.username;
-                    const userInfo = await fetchJson(`${baseUrl}/u/${username}.json`);
-                    score = userInfo?.user?.gamification_score || null;
-                }
+                let score = daily?.personal?.user?.total_score || daily?.personal?.total_score || null;
                 return {
                     dailyRank: daily?.personal?.position || null,
-                    globalRank: global?.personal?.position || null,
                     score: score
                 };
             } catch (e) {
-                return { dailyRank: null, globalRank: null, score: null };
+                return { dailyRank: null, score: null };
             }
         }
     }
@@ -861,8 +1030,17 @@
     // 在 CDK 域内只做数据桥接，不渲染面板
     const initCDKBridgePage = () => {
         const cacheAndNotify = async () => {
+            // 【最高优先级】请求频率硬限制检查（每分钟最多3次，不可绕过）
+            if (Utils.isRequestLimitExceeded('cdk')) {
+                const waitTime = Utils.getRequestWaitTime('cdk');
+                console.warn(`[LDA] cdk 请求频率超限，请 ${waitTime}s 后再试`);
+                // CDK Bridge 页面不显示 Toast（在 iframe 中运行）
+                return;
+            }
             // cdk 分组限流检查
             if (Utils.isRateLimited('cdk')) return;
+            // 记录请求时间戳
+            Utils.recordRequest('cdk');
             try {
                 const res = await fetch(CONFIG.API.CDK_INFO, { credentials: 'include' });
                 // 429 处理：设置 cdk 分组锁
@@ -2906,7 +3084,8 @@
                 displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float'), // 显示模式：float（悬浮球）/ header（顶栏按钮）
                 sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true), // 主页筛选工具开关，默认开启
                 fontSize: Utils.get(CONFIG.KEYS.FONT_SIZE, 100), // 字体大小百分比，默认100%
-                settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func') // 设置页子标签：func / appearance
+                settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func'), // 设置页子标签：func / appearance
+                showDailyRank: Utils.get(CONFIG.KEYS.SHOW_DAILY_RANK, false) // 显示每日排名，默认关闭
             };
             this.iconCache = Utils.get(CONFIG.KEYS.ICON_CACHE, null); // 小秘书图标缓存
             this.cdkCache = Utils.get(CONFIG.KEYS.CACHE_CDK, null);
@@ -2945,6 +3124,9 @@
         }
 
         async init(forceOpen = false) {
+            // 设置全局 Toast 回调
+            Utils.setShowToastCallback((msg, type, duration) => this.showToast(msg, type, duration));
+            
             if (this.autoRefreshTimer) {
                 clearInterval(this.autoRefreshTimer);
                 this.autoRefreshTimer = null;
@@ -3214,7 +3396,7 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode, sieveEnabled, fontSize, settingSubTab } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode, sieveEnabled, fontSize, settingSubTab, showDailyRank } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
@@ -3277,6 +3459,10 @@
                                 <label class="lda-switch"><input type="checkbox" id="inp-sieve-enabled" ${sieveEnabled ? 'checked' : ''}><span class="lda-slider"></span></label>
                                 <span style="font-size:12px">${this.t('set_sieve')}</span>
                                 <span style="font-size:9px;color:var(--lda-dim);opacity:0.7;">${this.t('sieve_tip')}</span>
+                            </div>
+                            <div style="display:flex;align-items:center;gap:6px;">
+                                <label class="lda-switch"><input type="checkbox" id="inp-show-daily-rank" ${showDailyRank ? 'checked' : ''}><span class="lda-slider"></span></label>
+                                <span style="font-size:12px">${this.t('set_show_daily_rank')}</span>
                             </div>
                         </div>
                         <div class="lda-opt">
@@ -3736,6 +3922,11 @@
                     } else {
                         this.destroySieve();
                     }
+                }
+                // 显示每日排名开关
+                if (e.target.id === 'inp-show-daily-rank') {
+                    this.state.showDailyRank = e.target.checked;
+                    Utils.set(CONFIG.KEYS.SHOW_DAILY_RANK, e.target.checked);
                 }
                 const iconSizeNode = e.target.closest('#grp-icon-size .lda-seg-item');
                 if (iconSizeNode) {
@@ -4706,7 +4897,10 @@
                 if (username) this.ensureUserSig(this.makeUserSig({ username }));
 
                 // 并行获取排名数据和用户信息（用于获取 created_at，失败不阻断）
-                const statsPromise = Utils.fetchForumStats().catch(() => null);
+                // 根据设置决定是否请求 Leaderboard（关闭时不发送请求）
+                const statsPromise = this.state.showDailyRank
+                    ? Utils.fetchForumStats().catch(() => null)
+                    : Promise.resolve(null);
                 // 如果还没有 userInfoData，并行获取以获得 created_at
                 const userInfoPromise = (!userInfoData && username)
                     ? Utils.fetchUserInfo(username).catch(() => null)
@@ -4781,10 +4975,10 @@
                     const now = new Date();
                     memberDays = Math.floor((now - createdDate) / (1000 * 60 * 60 * 24));
                 }
+                // 只有开启"显示每日排名"时才显示排名和积分（它们都来自 Leaderboard）
                 const statsData = {
-                    dailyRank: forumStats?.dailyRank || null,
-                    globalRank: forumStats?.globalRank || null,
-                    score: forumStats?.score || userInfo?.gamification_score || null,
+                    dailyRank: this.state.showDailyRank ? (forumStats?.dailyRank || null) : null,
+                    score: this.state.showDailyRank ? (forumStats?.score || null) : null,
                     memberDays: memberDays
                 };
 
@@ -4824,11 +5018,12 @@
             const showConnectLink = true;
 
             let statsHtml = '';
-            if (stats.globalRank || stats.dailyRank || stats.score || stats.memberDays !== null) {
+            // 根据设置决定是否显示每日排名和积分（它们都来自 Leaderboard）
+            const showLeaderboardData = this.state.showDailyRank;
+            if ((showLeaderboardData && (stats.dailyRank || stats.score)) || stats.memberDays !== null) {
                 statsHtml = `<a href="${CONFIG.API.LINK_LEADERBOARD}" target="_blank" class="lda-stats-bar" id="btn-go-leaderboard">`;
-                if (stats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')}: <span class="num today">${stats.dailyRank}</span></span>`;
-                if (stats.globalRank) statsHtml += `<span class="lda-stat-item">${this.t('rank')}: <span class="num rank">${stats.globalRank}</span></span>`;
-                if (stats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${Number(stats.score).toLocaleString()}</span></span>`;
+                if (showLeaderboardData && stats.dailyRank) statsHtml += `<span class="lda-stat-item">${this.t('rank_today')}: <span class="num today">${stats.dailyRank}</span></span>`;
+                if (showLeaderboardData && stats.score) statsHtml += `<span class="lda-stat-item">${this.t('score')}: <span class="num score">${Number(stats.score).toLocaleString()}</span></span>`;
                 if (stats.memberDays !== null) statsHtml += `<span class="lda-stat-item">${this.t('member_days')}: <span class="num days">${stats.memberDays}</span></span>`;
                 statsHtml += `</a>`;
             }
