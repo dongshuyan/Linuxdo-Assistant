@@ -3091,7 +3091,7 @@
                 gainAnim: Utils.get(CONFIG.KEYS.GAIN_ANIM, true), // 涨分动画，默认开启
                 useClassicIcon: Utils.get(CONFIG.KEYS.USE_CLASSIC_ICON, false), // 使用经典地球图标，默认关闭
                 iconSize: Utils.get(CONFIG.KEYS.ICON_SIZE, 'sm'), // 小秘书图标尺寸，默认小
-                displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'float'), // 显示模式：float（悬浮球）/ header（顶栏按钮）
+                displayMode: Utils.get(CONFIG.KEYS.DISPLAY_MODE, 'header'), // 显示模式：float（悬浮球）/ header（顶栏按钮），默认顶栏按钮
                 sieveEnabled: Utils.get(CONFIG.KEYS.SIEVE_ENABLED, true), // 主页筛选工具开关，默认开启
                 fontSize: Utils.get(CONFIG.KEYS.FONT_SIZE, 100), // 字体大小百分比，默认100%
                 settingSubTab: Utils.get(CONFIG.KEYS.SETTING_SUB_TAB, 'func'), // 设置页子标签：func / appearance
