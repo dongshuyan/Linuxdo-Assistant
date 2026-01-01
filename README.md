@@ -270,8 +270,10 @@
 本脚本的开发参考了以下项目和资源，在此表示感谢：
 
 - [LinuxDoStatus](https://github.com/1e0n/LinuxDoStatus) - 信任级别显示脚本，提供了实现思路参考
-- [Linux.do 社区讨论](https://linux.do/t/topic/1356074) - 社区成员的需求反馈和建议
+- [LINUX DO Credit 悬浮窗脚本](https://linux.do/t/topic/1356074) - Credit 积分悬浮窗实现参考
+- [L站分数与排名显示脚本](https://linux.do/t/topic/918083) - 分数与排名显示方案参考
 - [Linux.do 顶部显示脚本](https://linux.do/t/topic/1357173) - 排名/积分数据获取方案参考
+- [Linux.do 筛选工具](https://linux.do/t/topic/1285285) ([GitHub](https://github.com/chadyi/LinuxdoSieve)) - 主页筛选工具实现参考
 - AI 辅助工具 - 协助完成部分代码编写
 
 ## 📝 更新日志
