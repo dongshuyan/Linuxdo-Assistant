@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      5.13.0
+// @version      5.14.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,11 +23,12 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.13.0
- * - 新增：长按悬浮球/顶栏按钮可快速返回帖子1楼（在帖子楼层页面生效）
- * - 调整：自动展开面板默认关闭
+ * 更新日志 v5.14.0
+ * - 优化：修复内存泄漏问题，MutationObserver 添加防抖机制
+ * - 优化：筛选工具添加变化检测，减少不必要的 DOM 操作
  *
  * 历史更新：
+ * v5.13.0 - 长按悬浮球/顶栏按钮快速返回帖子1楼、自动展开面板默认关闭
  * v5.12.0 - 修复筛选工具无限刷新、新增加载更多按钮
  * v5.10.0 - 修复请求过于频繁问题、防止iframe多实例、增加防抖和冷却机制
  * v5.8.0 - 优化：设置页拆分为"功能"和"外观"双标签页 + 字体大小调节
@@ -1919,6 +1920,11 @@
             
             // 加载状态
             this.isLoadingMore = false;
+            
+            // 内存优化：防抖和变化检测
+            this._urlWatcherTimer = null;    // MutationObserver 防抖计时器
+            this._lastRowCount = 0;          // 上次帖子数量（变化检测用）
+            this._filterDirty = true;        // 筛选条件是否变化（强制重新筛选）
         }
 
         // 初始化
@@ -1953,6 +1959,12 @@
             if (this.checkInterval) {
                 clearInterval(this.checkInterval);
                 this.checkInterval = null;
+            }
+            
+            // 清理防抖计时器
+            if (this._urlWatcherTimer) {
+                clearTimeout(this._urlWatcherTimer);
+                this._urlWatcherTimer = null;
             }
             
             if (this.observer) {
@@ -2294,6 +2306,7 @@
                 Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
             }
             
+            this._filterDirty = true; // 标记筛选条件已变化
             this.updateAllBtns();
             this.filterTopics();
         }
@@ -2352,6 +2365,7 @@
                 Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
             }
             
+            this._filterDirty = true; // 标记筛选条件已变化
             this.filterTopics();
         }
 
@@ -2424,6 +2438,7 @@
             Utils.set(CONFIG.KEYS.SIEVE_CATS, this.activeCats);
             Utils.set(CONFIG.KEYS.SIEVE_TAGS, this.tagStates);
             
+            this._filterDirty = true; // 标记筛选条件已变化
             this.updateAllBtns();
             this.filterTopics();
         }
@@ -2691,6 +2706,9 @@
             // 滚动回原位
             window.scrollTo(0, scrollPos);
             
+            // 重置变化检测计数器，确保下次定时循环能正确检测
+            this._filterDirty = true;
+            
             // 重新筛选并计算新增数量
             const afterCount = this.filterTopics();
             const diff = afterCount - beforeCount;
@@ -2753,6 +2771,20 @@
                 return;
             }
 
+            // 内存优化：变化检测，只在帖子数量变化或筛选条件变化时执行完整筛选
+            const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
+            const currentRowCount = rows.length;
+            const hasChange = this._filterDirty || currentRowCount !== this._lastRowCount;
+            
+            if (!hasChange) {
+                // 无变化，跳过筛选，只更新状态
+                return;
+            }
+            
+            // 更新计数器
+            this._lastRowCount = currentRowCount;
+            this._filterDirty = false;
+
             const currentCount = this.filterTopics();
             const { LEVELS, CATEGORIES, TAGS } = SIEVE_CONFIG;
             
@@ -2802,17 +2834,26 @@
         setupUrlWatcher() {
             if (this.observer) this.observer.disconnect();
             
+            // 内存优化：使用防抖机制，避免频繁触发
+            // Discourse 论坛 DOM 变化极其频繁，不加防抖会导致内存持续增长
             this.observer = new MutationObserver(() => {
-                const url = location.href;
-                if (url !== this.lastUrl) {
-                    this.lastUrl = url;
-                    setTimeout(() => this.onUrlChange(), 500);
-                }
-                // 如果面板被移除，重新创建
-                if (!document.getElementById('lda-sieve-panel') && this.isHomePage()) {
-                    this.panel = null;
-                    this.createUI();
-                }
+                // 防抖：200ms 内多次变化只执行一次
+                if (this._urlWatcherTimer) clearTimeout(this._urlWatcherTimer);
+                this._urlWatcherTimer = setTimeout(() => {
+                    this._urlWatcherTimer = null;
+                    if (this.isDestroyed) return;
+                    
+                    const url = location.href;
+                    if (url !== this.lastUrl) {
+                        this.lastUrl = url;
+                        this.onUrlChange();
+                    }
+                    // 如果面板被移除，重新创建
+                    if (!document.getElementById('lda-sieve-panel') && this.isHomePage()) {
+                        this.panel = null;
+                        this.createUI();
+                    }
+                }, 200);
             });
             
             this.observer.observe(document, { subtree: true, childList: true });
@@ -2834,6 +2875,9 @@
                 if (!this.checkInterval) {
                     this.startFilterLoop();
                 }
+                // URL 变化时重置计数器，强制重新筛选
+                this._lastRowCount = 0;
+                this._filterDirty = true;
                 this.filterTopics();
             } else {
                 // 非首页时隐藏面板
@@ -4740,7 +4784,7 @@
                 const statsData = {
                     dailyRank: forumStats?.dailyRank || null,
                     globalRank: forumStats?.globalRank || null,
-                    score: forumStats?.score || null,
+                    score: forumStats?.score || userInfo?.gamification_score || null,
                     memberDays: memberDays
                 };
 
