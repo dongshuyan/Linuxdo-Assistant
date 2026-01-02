@@ -3192,10 +3192,11 @@
 
         // ========== 返回1楼功能 ==========
         // 检测是否在帖子楼层页面（非1楼）
+        // URL格式：/t/topic-slug/帖子ID/楼层号，其中楼层号 > 1 时才需要跳转
         isTopicFloorPage() {
             const path = window.location.pathname;
-            // 匹配 /t/xxx/数字 或 /t/xxx/xxx/数字 格式
-            const match = path.match(/^\/t\/[^\/]+(?:\/[^\/]+)?\/(\d+)$/);
+            // 匹配 /t/xxx/帖子ID/楼层号 格式（4段路径）
+            const match = path.match(/^\/t\/[^\/]+\/\d+\/(\d+)$/);
             if (match) {
                 const floor = parseInt(match[1], 10);
                 return floor > 1;
@@ -3206,8 +3207,8 @@
         // 获取1楼的URL
         getFirstFloorUrl() {
             const path = window.location.pathname;
-            // 移除末尾的楼层号
-            const firstFloorPath = path.replace(/\/\d+$/, '');
+            // 移除末尾的楼层号（只处理 /t/xxx/帖子ID/楼层号 格式）
+            const firstFloorPath = path.replace(/^(\/t\/[^\/]+\/\d+)\/\d+$/, '$1');
             return window.location.origin + firstFloorPath;
         }
 
