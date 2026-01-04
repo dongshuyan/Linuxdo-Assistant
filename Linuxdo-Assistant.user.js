@@ -1,12 +1,11 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      6.0.0
+// @version      6.1.0
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
 // @match        https://cdk.linux.do/*
-// @match        https://credit.linux.do/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_setValue
 // @grant        GM_getValue
@@ -24,10 +23,12 @@
 // ==/UserScript==
 
 /**
- * 更新日志 v5.16.0
- * - 调整：「显示每日排名」设置默认改为开启
+ * 更新日志 v6.1.0
+ * - 修复：float 模式下悬浮球位置超出屏幕导致不可见的问题
  *
  * 历史更新：
+ * v6.0.0 - 重大更新
+ * v5.16.0 - 调整：「显示每日排名」设置默认改为开启
  * v5.15.0 - 新增 API 接口调用与频率限制分析文档，README 增加完整功能说明
  * v5.14.0 - 修复内存泄漏问题，MutationObserver 添加防抖机制，筛选工具添加变化检测
  * v5.13.0 - 长按悬浮球/顶栏按钮快速返回帖子1楼、自动展开面板默认关闭
@@ -209,7 +210,7 @@
             link_tip: "前往网页版",
             refresh_tip_btn: "刷新数据",
             refresh_done: "刷新完毕",
-            refresh_no_data: "未获取到数据，请1分钟后重试或刷新页面",
+            refresh_no_data: "未获取到数据",
             rate_limit_exceeded: "请求频率过高，请稍后再试",
             check_update: "检查更新",
             checking: "检查中...",
@@ -358,7 +359,7 @@
             link_tip: "Open Website",
             refresh_tip_btn: "Refresh",
             refresh_done: "Refreshed",
-            refresh_no_data: "No data, retry in 1 min or refresh page",
+            refresh_no_data: "No data available",
             rate_limit_exceeded: "Too many requests, please try again later",
             check_update: "Check Update",
             checking: "Checking...",
@@ -760,110 +761,27 @@
         }
         // v4-inspired: DOM-based login & username detection (used for cache/user-switch and as fallback)
         // Return: true (logged-in) / false (guest) / null (unknown)
-        // 多层检测确保准确性，兼容中英文界面和各种插件影响
         static getLoginStateByDOM() {
             try {
-                // ========== 第一层：检测已登录用户的标志 ==========
-                // 已登录用户会有 current-user 相关元素
                 const header = document.querySelector('.d-header') || document;
                 const hasUser = !!header.querySelector('.header-dropdown-toggle.current-user, a.current-user, .current-user');
                 if (hasUser) return true;
-                
-                // 检测用户头像（已登录用户通常有头像）
-                const hasAvatar = !!header.querySelector('.current-user img, #current-user img, [data-user-card]');
-                if (hasAvatar) return true;
 
-                // ========== 第二层：检测登录按钮的存在（多种方式） ==========
-                let hasLoginButton = false;
-                
-                // 方式1：通过 class 检测 login-button
-                const loginBtnByClass = document.querySelector('.login-button, .btn-login, [class*="login-button"], [class*="btn-login"]');
-                if (loginBtnByClass) hasLoginButton = true;
-                
-                // 方式2：检测包含 #user 图标的 SVG（Discourse 登录按钮特征）
-                if (!hasLoginButton) {
-                    const svgUses = document.querySelectorAll('svg use[href="#user"], svg use[xlink\\:href="#user"]');
-                    for (const use of svgUses) {
-                        const btn = use.closest('button, a, .btn');
-                        if (btn) {
-                            // 确认这是登录按钮而不是用户菜单
-                            const isInHeader = btn.closest('.d-header, header, nav');
-                            const isNotUserMenu = !btn.closest('.current-user, .user-menu, #current-user');
-                            if (isInHeader && isNotUserMenu) {
-                                hasLoginButton = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-                
-                // 方式3：通过按钮文本检测（中英文兼容）
-                if (!hasLoginButton) {
-                    const buttons = document.querySelectorAll('button, a.btn, .btn');
-                    for (const btn of buttons) {
-                        const text = (btn.textContent || '').trim().toLowerCase();
-                        const isInHeader = btn.closest('.d-header, header, nav');
-                        // 检测登录相关文本（中英文）
-                        if (isInHeader && /^(登录|log\s*in|sign\s*in|login)$/i.test(text)) {
-                            hasLoginButton = true;
-                            break;
-                        }
-                    }
-                }
-                
-                // 方式4：通过 href 检测登录链接
-                if (!hasLoginButton) {
-                    const loginLinks = document.querySelectorAll('a[href*="/login"], a[href*="/session/sso"]');
-                    for (const link of loginLinks) {
-                        const isInHeader = link.closest('.d-header, header, nav');
-                        if (isInHeader) {
-                            hasLoginButton = true;
-                            break;
-                        }
-                    }
-                }
-                
-                // 方式5：通过 d-button-label 检测（Discourse 按钮结构）
-                if (!hasLoginButton) {
-                    const labels = document.querySelectorAll('.d-button-label');
-                    for (const label of labels) {
-                        const text = (label.textContent || '').trim().toLowerCase();
-                        if (/^(登录|log\s*in|sign\s*in|login)$/i.test(text)) {
-                            const btn = label.closest('button, a');
-                            const isInHeader = btn?.closest('.d-header, header, nav');
-                            if (isInHeader) {
-                                hasLoginButton = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if (hasLoginButton) return false;
-                
-                // ========== 第三层：兜底检测 ==========
-                // 如果既没有用户标志也没有登录按钮，尝试其他方式
                 const els = Array.from(header.querySelectorAll('a[href], button, .btn'));
-                const hasLoginOrSignup = els.some(el => {
+                const hasLogin = els.some(el => {
                     const href = (el.getAttribute('href') || '').toLowerCase();
                     const text = (el.textContent || '').trim().toLowerCase();
+                    // 只在 header 范围内检测“登录/注册”入口（借鉴 v4：无登录/注册按钮通常意味着已登录）
                     return href.includes('/login') || href.includes('/session')
                         || href.includes('/signup') || href.includes('/register')
                         || /登录|注册|log\s*in|sign\s*in|sign\s*up|register/.test(text);
                 });
 
-                if (hasLoginOrSignup) return false;
-                
-                return null; // 无法确定
+                if (hasLogin) return false;
+                return null;
             } catch (_) {
                 return null;
             }
-        }
-        
-        // 快速检测是否为未登录状态（用于在发送请求前判断）
-        // 只有明确检测到登录按钮时才返回 true，其他情况返回 false
-        static isDefinitelyNotLoggedIn() {
-            return Utils.getLoginStateByDOM() === false;
         }
 
         // 尝试多种方式获取当前用户名（参考 v4 的 getCurrentUsername）
@@ -1122,11 +1040,6 @@
     const CDK_CACHE_TTL = 5 * 60 * 1000;
     const isCDKPage = location.hostname === 'cdk.linux.do';
 
-    // --- Credit Bridge (Tampermonkey 兼容兜底) ---
-    const CREDIT_BRIDGE_ORIGIN = 'https://credit.linux.do';
-    const CREDIT_CACHE_TTL = 5 * 60 * 1000;
-    const isCreditPage = location.hostname === 'credit.linux.do';
-
     // 在 CDK 域内只做数据桥接，不渲染面板
     const initCDKBridgePage = () => {
         const cacheAndNotify = async () => {
@@ -1170,78 +1083,6 @@
 
     if (isCDKPage) {
         initCDKBridgePage();
-        return;
-    }
-
-    // 在 Credit 域内只做数据桥接，不渲染面板
-    const initCreditBridgePage = () => {
-        const cacheAndNotify = async () => {
-            // 【最高优先级】请求频率硬限制检查（每分钟最多3次，不可绕过）
-            if (Utils.isRequestLimitExceeded('credit')) {
-                const waitTime = Utils.getRequestWaitTime('credit');
-                console.warn(`[LDA] credit 请求频率超限，请 ${waitTime}s 后再试`);
-                // Credit Bridge 页面不显示 Toast（在 iframe 中运行）
-                return;
-            }
-            // credit 分组限流检查
-            if (Utils.isRateLimited('credit')) return;
-            // 记录请求时间戳
-            Utils.recordRequest('credit');
-            try {
-                // 并行获取用户信息和统计数据
-                const [infoRes, statsRes] = await Promise.all([
-                    fetch(CONFIG.API.CREDIT_INFO, { credentials: 'include' }),
-                    fetch(CONFIG.API.CREDIT_STATS, { credentials: 'include' })
-                ]);
-                // 429 处理：设置 credit 分组锁
-                if (infoRes.status === 429 || statsRes.status === 429) {
-                    const retryAfter = parseInt(
-                        infoRes.headers.get('Retry-After') || 
-                        statsRes.headers.get('Retry-After') || '60', 10
-                    );
-                    Utils.setRateLimit('credit', retryAfter);
-                    return;
-                }
-                if (!infoRes.ok) return;
-                const infoJson = await infoRes.json();
-                if (!infoJson?.data) return;
-                
-                let statsData = [];
-                let gamificationScore = null;
-                if (statsRes.ok) {
-                    try {
-                        const statsJson = await statsRes.json();
-                        statsData = statsJson?.data || [];
-                        // 尝试从统计数据中提取 gamification_score
-                        if (Array.isArray(statsData) && statsData.length > 0) {
-                            gamificationScore = statsData[0]?.gamification_score ?? null;
-                        }
-                    } catch (_) { }
-                }
-                
-                const payload = {
-                    info: infoJson.data,
-                    stats: statsData,
-                    gamificationScore
-                };
-                Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, { ...payload, ts: Date.now() });
-                try {
-                    window.parent?.postMessage({ type: 'lda-credit-data', payload }, '*');
-                } catch (_) { }
-            } catch (_) { }
-        };
-
-        // 初始化立即拉取一次
-        cacheAndNotify();
-
-        // 接收来自 linux.do 的请求再拉取一次
-        window.addEventListener('message', (e) => {
-            if (e.data?.type === 'lda-credit-request') cacheAndNotify();
-        });
-    };
-
-    if (isCreditPage) {
-        initCreditBridgePage();
         return;
     }
 
@@ -3280,11 +3121,6 @@
             this.cdkBridgeFrame = null;
             this.cdkWaiters = [];
             this.onCDKMessage = this.onCDKMessage.bind(this);
-            // Credit Bridge 相关
-            this.creditBridgeInit = false;
-            this.creditBridgeFrame = null;
-            this.creditWaiters = [];
-            this.onCreditMessage = this.onCreditMessage.bind(this);
             this.activePage = 'trust';
             this.pendingStatus = {
                 trust: { count: 0, since: null, timer: null, slowShown: false },
@@ -4984,15 +4820,6 @@
                 }
                 if (this.trustData) this.renderTrust(this.trustData);
 
-                // 【登录状态预检查】如果明确检测到未登录，直接显示未登录UI，不发送请求
-                if (Utils.isDefinitelyNotLoggedIn()) {
-                    this.renderTrustNotLoggedIn(wrap);
-                    this.stopRefreshWithMinDuration('trust');
-                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                    endWait();
-                    return;
-                }
-
                 // ✅ 1) 登录态 / 用户名 / 当前等级 获取（多策略兜底：session → connect → DOM）
                 const sessionUser = await Utils.fetchSessionUser();
 
@@ -5235,38 +5062,6 @@
             }
         }
 
-        // 渲染 Trust 未登录界面（用于登录状态预检查）
-        renderTrustNotLoggedIn(wrap) {
-            wrap.innerHTML = `
-          <div class="lda-card lda-auth-card">
-            <div class="lda-auth-top">
-              <div class="lda-auth-icon">
-                <svg viewBox="0 0 24 24" width="22" height="22" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4Z" fill="currentColor" opacity=".15"/>
-                  <path d="M12 2.2 20 5.8v5.2c0 4.95-3.33 9.58-8 10.86C7.33 20.58 4 15.95 4 11V5.8l8-3.6Z" stroke="currentColor" stroke-width="1.2"/>
-                  <path d="M9.4 12.4 11 14l3.6-3.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
-                </svg>
-              </div>
-              <div>
-                <div style="font-weight:800">${this.t('trust_not_login')}</div>
-                <div style="font-size:12px;color:var(--lda-dim);margin-top:2px;line-height:1.5">${this.t('trust_login_tip')}</div>
-              </div>
-            </div>
-            <div class="lda-auth-actions">
-              <button class="lda-auth-btn primary" id="btn-go-login"><span>${this.t('trust_go_login')}</span></button>
-              <button class="lda-auth-btn secondary" id="btn-retry-trust"><span>${this.t('credit_refresh')}</span></button>
-            </div>
-          </div>`;
-            const btn = Utils.el('#btn-go-login', wrap);
-            if (btn) btn.onclick = () => { this.focusFlags.trust = true; location.href = '/login'; };
-            const retry = Utils.el('#btn-retry-trust', wrap);
-            if (retry) retry.onclick = (e) => {
-                e.stopPropagation();
-                retry.classList.add('loading');
-                this.refreshTrust({ manual: true, force: true });
-            };
-        }
-
         renderTrust(data) {
             const wrap = this.dom.trust;
             if (!data?.basic) {
@@ -5455,7 +5250,6 @@
         }
 
         // ===================== 积分刷新：按你要求的状态机 =====================
-        // Credit 数据获取：方案1 GM_xmlhttpRequest -> 方案2 iframe桥接 -> 方案3 缓存/引导UI
         async refreshCredit(arg = true) {
             const base = { background: false, force: undefined, manual: false, autoRetry: true };
             const opts = typeof arg === 'object' ? { ...base, ...arg } : { ...base, manual: !!arg, force: arg === false ? false : undefined };
@@ -5494,197 +5288,144 @@
                 wrap.innerHTML = `<div style="text-align:center;padding:30px;color:var(--lda-dim)">${this.t('loading')}</div>`;
             }
 
-            // 先展示新鲜缓存
-            if (this.isCreditCacheFresh()) {
-                this.renderCredit(this.creditData);
-                if (!forceFetch && !this.isExpired('credit')) {
+            try {
+                if (this.creditData && !forceFetch && !this.isExpired('credit')) {
+                    this.renderCredit(this.creditData);
                     this.stopRefreshWithMinDuration('credit');
                     endWait();
                     return;
                 }
-            } else if (this.creditData) {
-                this.renderCredit(this.creditData);
-            }
+                if (this.creditData) this.renderCredit(this.creditData);
 
-            // 【登录状态预检查】如果明确检测到未登录，直接显示未登录UI，不发送请求
-            if (Utils.isDefinitelyNotLoggedIn()) {
-                this.renderCreditAuth();
-                this.stopRefreshWithMinDuration('credit');
-                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                endWait();
-                return;
-            }
+                // Firefox 需要 Referer 头才能正确发送跨域 cookie
+                const creditHeaders = { 'Referer': 'https://credit.linux.do/home' };
+                const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true, headers: creditHeaders });
+                const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true, headers: creditHeaders });
 
-            let directErr = null;
-            let bridgeErr = null;
+                let info = null;
+                let stats = [];
+                let gamificationScore = null;
 
-            // 方案1: GM_xmlhttpRequest 直接请求
-            try {
-                const result = await this.fetchCreditDirect();
+                await Promise.all([
+                    infoPromise.then(r => {
+                        info = JSON.parse(r).data;
+                        const sig = this.makeUserSig(info);
+                        if (sig) this.ensureUserSig(sig);
+                    }),
+                    statPromise.then(r => {
+                        stats = JSON.parse(r).data || [];
+                    })
+                ]);
+
+                // 获取 gamification_score（用于计算预估涨分）
+                // 兼容 CREDIT_INFO API 返回 username 或 nickname 字段
+                const creditUsername = info?.username || info?.nickname;
+                if (creditUsername) {
+                    try {
+                        const userRes = await Utils.request(CONFIG.API.USER_INFO(creditUsername), { withCredentials: true });
+                        const userData = JSON.parse(userRes);
+                        gamificationScore = userData?.user?.gamification_score ?? null;
+                    } catch (_) { /* 忽略错误，保持 null */ }
+                }
+
                 const oldGain = this.creditData?.estimatedGain ?? null;
-                this.creditData = result;
+                // 基准值：community-balance 或 community_balance
+                const communityBalance = parseFloat(info['community-balance'] ?? info.community_balance ?? 0);
+                const newGain = (gamificationScore !== null && communityBalance > 0)
+                    ? gamificationScore - communityBalance
+                    : null;
+
+                this.creditData = { info, stats, gamificationScore, communityBalance, estimatedGain: newGain };
                 this.renderCredit(this.creditData);
                 Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
-                this.checkGainAndAnimate(oldGain, result.estimatedGain);
+
+                // 检测涨分变化并触发动画
+                this.checkGainAndAnimate(oldGain, newGain);
                 this.markFetch('credit');
                 this.stopRefreshWithMinDuration('credit');
                 if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
                 endWait();
-                return;
             } catch (e) {
-                directErr = e;
-            }
+                const isAuthError = e?.status === 401 || e?.status === 403 || /unauthorized|not\s*login/i.test(e?.responseText || '');
 
-            // 方案2: iframe 桥接（自动回退）
-            try {
-                const bridgeData = await this.fetchCreditViaBridge();
-                if (bridgeData?.info) {
-                    const oldGain = this.creditData?.estimatedGain ?? null;
-                    // 从桥接数据构建完整的 creditData
-                    const info = bridgeData.info;
-                    const stats = bridgeData.stats || [];
-                    let gamificationScore = bridgeData.gamificationScore ?? null;
-                    
-                    // 尝试获取 gamification_score（如果桥接没有提供）
-                    if (gamificationScore === null) {
-                        const creditUsername = info?.username || info?.nickname;
-                        if (creditUsername) {
-                            try {
-                                const userRes = await Utils.request(CONFIG.API.USER_INFO(creditUsername), { withCredentials: true });
-                                const userData = JSON.parse(userRes);
-                                gamificationScore = userData?.user?.gamification_score ?? null;
-                            } catch (_) { /* 忽略错误 */ }
-                        }
+                if (isAuthError) {
+                    // 检查用户是否登录到 LinuxDO 主站
+                    const isUserLoggedIn = Utils.getLoginStateByDOM();
+                    // 如果已有可用缓存数据
+                    const hasUsableCache = !!(this.creditData?.info && this.creditData.info.available_balance !== undefined);
+
+                    // 如果用户已登录主站且有缓存，显示缓存数据并提示需要重新授权
+                    if (isUserLoggedIn === true && hasUsableCache) {
+                        // 不自动设置 focusFlags，避免循环刷新
+                        this.showToast(this.t('credit_keep_cache_tip'), 'warning', 3000);
+                        try { this.renderCredit(this.creditData); } catch (_) { /* ignore */ }
+                        this.stopRefreshWithMinDuration('credit');
+                        endWait();
+                        return;
                     }
-                    
-                    const communityBalance = parseFloat(info['community-balance'] ?? info.community_balance ?? 0);
-                    const newGain = (gamificationScore !== null && communityBalance > 0)
-                        ? gamificationScore - communityBalance
-                        : null;
-                    
-                    this.creditData = { info, stats, gamificationScore, communityBalance, estimatedGain: newGain };
-                    const sig = this.makeUserSig(info);
-                    if (sig) this.ensureUserSig(sig);
-                    
-                    this.renderCredit(this.creditData);
-                    Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
-                    this.checkGainAndAnimate(oldGain, newGain);
-                    this.markFetch('credit');
+
+                    // 如果用户未登录主站（isUserLoggedIn === false），则显示登录界面并清除缓存
+                    // 如果无法确定登录状态（isUserLoggedIn === null）但没有缓存，也显示授权界面
+                    if (isUserLoggedIn === false) {
+                        // 清除 credit 缓存数据
+                        this.creditData = null;
+                        this.lastFetch.credit = 0;
+                        Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, null);
+                        Utils.set(CONFIG.KEYS.CACHE_META, this.lastFetch);
+                    }
+
                     this.stopRefreshWithMinDuration('credit');
-                    if (manual) this.showToast(this.t('refresh_done'), 'success', 1500);
+                    // 不自动设置 focusFlags，避免循环刷新
+                    wrap.innerHTML = `
+                        <div class="lda-card lda-auth-card">
+                            <div class="lda-auth-icon">
+                                <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M17.13,17C15.92,18.85 14.11,20.24 12,20.92C9.89,20.24 8.08,18.85 6.87,17C6.53,16.5 6.24,16 6,15.47C6,13.82 8.71,12.47 12,12.47C15.29,12.47 18,13.79 18,15.47C17.76,16 17.47,16.5 17.13,17Z"/></svg>
+                            </div>
+                            <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
+                            <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
+                            <div class="lda-auth-btns">
+                                <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn" id="btn-go-credit"><span>${this.t('credit_go_auth')} →</span></a>
+                                <button id="btn-credit-refresh" class="lda-auth-btn secondary"><span>${this.t('credit_refresh')}</span></button>
+                            </div>
+                        </div>
+                    `;
+                    const refreshBtn = Utils.el('#btn-credit-refresh', wrap);
+                    if (refreshBtn) refreshBtn.onclick = (ev) => {
+                        ev.stopPropagation();
+                        refreshBtn.classList.add('loading');
+                        this.refreshCredit({ manual: true, force: true });
+                    };
+                    const go = Utils.el('#btn-go-credit', wrap);
+                    // 用户点击跳转链接时才设置 focusFlags
+                    if (go) go.onclick = () => { this.focusFlags.credit = true; };
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                     endWait();
                     return;
                 }
-                throw new Error('bridge returned no data');
-            } catch (e) {
-                bridgeErr = e;
-            }
 
-            // 方案3: 显示缓存/引导UI
-            this.stopRefreshWithMinDuration('credit');
+                // ✅ 其他失败：如果有缓存数据，继续显示缓存；否则显示友好网络错误 UI
+                if (this.creditData?.info) {
+                    // 有缓存数据，继续显示缓存，只 toast 提示刷新失败
+                    this.renderCredit(this.creditData);
+                    this.stopRefreshWithMinDuration('credit');
+                    if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
+                    endWait();
+                    return;
+                }
 
-            // 如果已有缓存数据（不管是否新鲜），继续显示缓存，不覆盖为错误/未登录
-            if (this.creditData?.info) {
-                this.renderCredit(this.creditData);
+                // 无缓存时才显示友好网络错误 UI（左Credit右刷新）
+                this.renderStateCard(wrap, 'credit', {
+                    title: this.t('network_error_title'),
+                    tip: this.t('network_error_tip'),
+                    leftUrl: CONFIG.API.LINK_CREDIT,
+                    leftText: this.t('credit_open'),
+                    onRetry: () => this.refreshCredit({ manual: true, force: true })
+                });
+
+                this.stopRefreshWithMinDuration('credit');
                 if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
                 endWait();
-                return;
             }
-
-            const isAuthLike = (err) => {
-                if (!err) return false;
-                if (err?.status === 401 || err?.status === 403) return true;
-                const msg = String(err?.message || '') + String(err?.responseText || '');
-                return /unauthorized|401|403|forbidden|not\s*login/i.test(msg);
-            };
-
-            // 判断是否为认证错误
-            if (isAuthLike(directErr)) {
-                this.renderCreditAuth();
-                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                endWait();
-                return;
-            }
-
-            // 其他失败：友好网络错误 UI
-            this.renderStateCard(wrap, 'credit', {
-                title: this.t('network_error_title'),
-                tip: this.t('network_error_tip'),
-                leftUrl: CONFIG.API.LINK_CREDIT,
-                leftText: this.t('credit_open'),
-                onRetry: () => this.refreshCredit({ manual: true, force: true })
-            });
-
-            if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-            endWait();
-        }
-
-        // Credit 直接请求方法（GM_xmlhttpRequest）
-        async fetchCreditDirect() {
-            // Firefox 需要 Referer 头才能正确发送跨域 cookie
-            const creditHeaders = { 'Referer': 'https://credit.linux.do/home' };
-            const infoPromise = Utils.request(CONFIG.API.CREDIT_INFO, { withCredentials: true, headers: creditHeaders });
-            const statPromise = Utils.request(CONFIG.API.CREDIT_STATS, { withCredentials: true, headers: creditHeaders });
-
-            let info = null;
-            let stats = [];
-            let gamificationScore = null;
-
-            await Promise.all([
-                infoPromise.then(r => {
-                    info = JSON.parse(r).data;
-                    const sig = this.makeUserSig(info);
-                    if (sig) this.ensureUserSig(sig);
-                }),
-                statPromise.then(r => {
-                    stats = JSON.parse(r).data || [];
-                })
-            ]);
-
-            if (!info) throw new Error('no data');
-
-            // 获取 gamification_score（用于计算预估涨分）
-            const creditUsername = info?.username || info?.nickname;
-            if (creditUsername) {
-                try {
-                    const userRes = await Utils.request(CONFIG.API.USER_INFO(creditUsername), { withCredentials: true });
-                    const userData = JSON.parse(userRes);
-                    gamificationScore = userData?.user?.gamification_score ?? null;
-                } catch (_) { /* 忽略错误，保持 null */ }
-            }
-
-            const communityBalance = parseFloat(info['community-balance'] ?? info.community_balance ?? 0);
-            const newGain = (gamificationScore !== null && communityBalance > 0)
-                ? gamificationScore - communityBalance
-                : null;
-
-            return { info, stats, gamificationScore, communityBalance, estimatedGain: newGain };
-        }
-
-        // Credit 未授权界面渲染
-        renderCreditAuth() {
-            const wrap = this.dom.credit;
-            wrap.innerHTML = `
-                <div class="lda-card lda-auth-card">
-                    <div class="lda-auth-icon">
-                        <svg viewBox="0 0 24 24" width="48" height="48"><path fill="currentColor" d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,5A3,3 0 0,1 15,8A3,3 0 0,1 12,11A3,3 0 0,1 9,8A3,3 0 0,1 12,5M17.13,17C15.92,18.85 14.11,20.24 12,20.92C9.89,20.24 8.08,18.85 6.87,17C6.53,16.5 6.24,16 6,15.47C6,13.82 8.71,12.47 12,12.47C15.29,12.47 18,13.79 18,15.47C17.76,16 17.47,16.5 17.13,17Z"/></svg>
-                    </div>
-                    <div class="lda-auth-title">${this.t('credit_not_auth')}</div>
-                    <div class="lda-auth-tip">${this.t('credit_auth_tip')}</div>
-                    <div class="lda-auth-btns">
-                        <a href="${CONFIG.API.LINK_CREDIT}" target="_blank" class="lda-auth-btn" id="btn-go-credit"><span>${this.t('credit_go_auth')} →</span></a>
-                        <button id="btn-credit-refresh" class="lda-auth-btn secondary"><span>${this.t('credit_refresh')}</span></button>
-                    </div>
-                </div>
-            `;
-            const refreshBtn = Utils.el('#btn-credit-refresh', wrap);
-            if (refreshBtn) refreshBtn.onclick = (ev) => {
-                ev.stopPropagation();
-                refreshBtn.classList.add('loading');
-                this.refreshCredit({ manual: true, force: true });
-            };
-            const go = Utils.el('#btn-go-credit', wrap);
-            if (go) go.onclick = () => { this.focusFlags.credit = true; };
         }
 
         renderCredit(data) {
@@ -5807,15 +5548,6 @@
                     endWait();
                     return;
                 }
-            }
-
-            // 【登录状态预检查】如果明确检测到未登录，直接显示未登录UI，不发送请求
-            if (Utils.isDefinitelyNotLoggedIn()) {
-                this.renderCDKAuth();
-                this.stopRefreshWithMinDuration('cdk');
-                if (manual) this.showToast(this.t('refresh_no_data'), 'warning', 2000);
-                endWait();
-                return;
             }
 
             let directErr = null;
@@ -5981,63 +5713,6 @@
             return this.cdkCache && (Date.now() - (this.cdkCache.ts || 0) < CDK_CACHE_TTL);
         }
 
-        // --- Credit Bridge 方法 ---
-        ensureCreditBridge() {
-            if (this.creditBridgeInit) return;
-            this.creditBridgeInit = true;
-            window.addEventListener('message', this.onCreditMessage);
-            const iframe = document.createElement('iframe');
-            iframe.id = 'lda-credit-bridge';
-            iframe.src = CONFIG.API.LINK_CREDIT;
-            iframe.style.cssText = 'width:0;height:0;opacity:0;position:absolute;border:0;pointer-events:none;';
-            document.body.appendChild(iframe);
-            this.creditBridgeFrame = iframe;
-        }
-
-        fetchCreditViaBridge() {
-            return new Promise((resolve, reject) => {
-                this.ensureCreditBridge();
-                const timer = setTimeout(() => {
-                    this.creditWaiters = this.creditWaiters.filter(fn => fn !== done);
-                    reject(new Error('credit bridge timeout'));
-                }, 5000);
-                const done = (data) => {
-                    clearTimeout(timer);
-                    resolve(data);
-                };
-                this.creditWaiters.push(done);
-                try {
-                    this.creditBridgeFrame?.contentWindow?.postMessage({ type: 'lda-credit-request' }, CREDIT_BRIDGE_ORIGIN);
-                } catch (_) { }
-            });
-        }
-
-        onCreditMessage(event) {
-            if (event.origin !== CREDIT_BRIDGE_ORIGIN) return;
-            const payload = event.data?.payload || event.data;
-            if (!payload?.info) return;
-            // 缓存桥接返回的数据
-            this.cacheCreditDataFromBridge(payload);
-            const waiters = [...this.creditWaiters];
-            this.creditWaiters = [];
-            waiters.forEach(fn => fn(payload));
-        }
-
-        cacheCreditDataFromBridge(payload) {
-            // 桥接返回的数据结构: { info, stats, gamificationScore }
-            this.creditData = {
-                info: payload.info,
-                stats: payload.stats || [],
-                gamificationScore: payload.gamificationScore ?? null,
-                ts: Date.now()
-            };
-            Utils.set(CONFIG.KEYS.CACHE_CREDIT_DATA, this.creditData);
-        }
-
-        isCreditCacheFresh() {
-            return this.creditData && (Date.now() - (this.creditData.ts || 0) < CREDIT_CACHE_TTL);
-        }
-
         renderCDKContent(info) {
             const wrap = this.dom.cdk;
             const trustLevelNames = {
@@ -6126,18 +5801,13 @@
             this.dom.panel.style.display = show ? 'flex' : 'none';
             if (show) {
                 this.renderFromCacheAll();
-                // 只刷新当前显示的页面，而不是全部三个页面
-                const currentPage = this.activePage; // 'trust', 'credit', 'cdk', 'setting'
-                const needRefresh = {
-                    trust: !this.trustData || this.isExpired('trust'),
-                    credit: !this.creditData || this.isExpired('credit'),
-                    cdk: !this.cdkCache || this.isExpired('cdk')
-                };
-                // setting 页不需要刷新数据
-                if (currentPage !== 'setting' && (!this.dom.panel.dataset.loaded || needRefresh[currentPage])) {
-                    if (currentPage === 'trust') this.refreshTrust({ force: needRefresh.trust });
-                    else if (currentPage === 'credit') this.refreshCredit({ force: needRefresh.credit });
-                    else if (currentPage === 'cdk') this.refreshCDK({ force: needRefresh.cdk });
+                const needTrust = !this.trustData || this.isExpired('trust');
+                const needCredit = !this.creditData || this.isExpired('credit');
+                const needCDK = !this.cdkCache || this.isExpired('cdk');
+                if (!this.dom.panel.dataset.loaded || needTrust || needCredit || needCDK) {
+                    this.refreshTrust({ force: needTrust });
+                    this.refreshCredit({ force: needCredit });
+                    this.refreshCDK({ force: needCDK });
                     this.dom.panel.dataset.loaded = '1';
                 }
                 this.refreshSlowTipForPage(this.activePage);
@@ -6386,8 +6056,14 @@
 
         restorePos() {
             const p = Utils.get(CONFIG.KEYS.POS, { r: 20, t: 100 });
-            this.dom.root.style.right = p.r + 'px';
-            this.dom.root.style.top = p.t + 'px';
+            const ballSize = 40; // 悬浮球基准尺寸
+            // 边界检查：确保悬浮球在屏幕范围内（修复窗口大小变化后位置超出的问题）
+            const maxR = Math.max(0, window.innerWidth - ballSize);
+            const maxT = Math.max(0, window.innerHeight - 50); // 与拖拽逻辑保持一致
+            const safeR = Math.max(0, Math.min(p.r, maxR));
+            const safeT = Math.max(0, Math.min(p.t, maxT));
+            this.dom.root.style.right = safeR + 'px';
+            this.dom.root.style.top = safeT + 'px';
         }
 
         async checkUpdate(options = {}) {
