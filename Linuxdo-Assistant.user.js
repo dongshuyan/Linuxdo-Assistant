@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      6.1.0
+// @version      6.1.1
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -27,6 +27,7 @@
  * - 修复：float 模式下悬浮球位置超出屏幕导致不可见的问题
  *
  * 历史更新：
+ * v6.1.1 - 添加主题，手绘风和像素风
  * v6.0.0 - 重大更新
  * v5.16.0 - 调整：「显示每日排名」设置默认改为开启
  * v5.15.0 - 新增 API 接口调用与频率限制分析文档，README 增加完整功能说明
@@ -44,6 +45,47 @@
 
 (function () {
     'use strict';
+
+    // 清理旧实例，避免多脚本/重复注入导致 UI 不一致
+    const cleanupOldInstances = () => {
+        try {
+            document.querySelectorAll('#lda-root').forEach(el => el.remove());
+            const headerBtn = document.getElementById('lda-header-btn');
+            if (headerBtn) headerBtn.remove();
+            const updateMask = document.getElementById('lda-update-mask');
+            if (updateMask) updateMask.remove();
+            const sievePanel = document.getElementById('lda-sieve-panel');
+            if (sievePanel) sievePanel.remove();
+            const sieveStyles = document.getElementById('lda-sieve-styles');
+            if (sieveStyles) sieveStyles.remove();
+        } catch (_) { /* 忽略 */ }
+    };
+    cleanupOldInstances();
+
+    const LDA_GLOBAL_KEY = '__LDA_INSTANCE__';
+    const CURRENT_VERSION = (typeof GM_info !== 'undefined' && GM_info?.script?.version)
+        ? GM_info.script.version
+        : '0.0.0';
+
+    const compareVersion = (v1, v2) => {
+        const a = String(v1 || '0').split('.').map(n => parseInt(n, 10) || 0);
+        const b = String(v2 || '0').split('.').map(n => parseInt(n, 10) || 0);
+        for (let i = 0; i < Math.max(a.length, b.length); i++) {
+            const n1 = a[i] || 0;
+            const n2 = b[i] || 0;
+            if (n1 > n2) return 1;
+            if (n1 < n2) return -1;
+        }
+        return 0;
+    };
+
+    const prevInstance = window[LDA_GLOBAL_KEY];
+    if (prevInstance && prevInstance.version && compareVersion(CURRENT_VERSION, prevInstance.version) < 0) {
+        return;
+    }
+    if (prevInstance?.destroy) {
+        try { prevInstance.destroy(); } catch (_) { /* 忽略 */ }
+    }
 
     // 配置
     const CONFIG = {
@@ -85,6 +127,7 @@
         KEYS: {
             POS: 'lda_v4_pos',
             THEME: 'lda_v4_theme',
+            STYLE_PRESET: 'lda_v6_style_preset',
             EXPAND: 'lda_v4_expand',
             HEIGHT: 'lda_v4_height',
             LANG: 'lda_v4_lang',
@@ -293,6 +336,10 @@
             // 设置页分类
             set_func: "功能",
             set_appearance: "外观",
+            set_style: "主题风格",
+            style_default: "默认",
+            style_sketch: "手绘",
+            style_pixel: "像素",
             set_font_size: "字体大小",
             font_size_reset: "重置",
             // 返回1楼功能
@@ -441,6 +488,10 @@
             // Settings sub-tabs
             set_func: "Functions",
             set_appearance: "Appearance",
+            set_style: "Theme Style",
+            style_default: "Default",
+            style_sketch: "Sketch",
+            style_pixel: "Pixel",
             set_font_size: "Font Size",
             font_size_reset: "Reset",
             // Back to first floor
@@ -1790,6 +1841,287 @@
 
     `;
 
+    // 主题皮肤样式（独立注入，按需切换）
+    const ThemeSkinStyles = `
+        /* 主题皮肤：手绘 */
+        #lda-root.lda-skin-sketch {
+            --lda-font: "Segoe Print", "Comic Sans MS", "Bradley Hand", "Chalkboard SE", "KaiTi", "STKaiti", "Microsoft YaHei", sans-serif;
+            --lda-bg: rgba(252, 248, 240, 0.98);
+            --lda-fg: #1f1a14;
+            --lda-dim: #6b6256;
+            --lda-border: 2px solid rgba(30, 30, 30, 0.6);
+            --lda-shadow: 6px 6px 0 rgba(20, 20, 20, 0.25);
+            --lda-accent: #e07a3f;
+            --lda-ball-ring: rgba(30, 30, 30, 0.35);
+            --lda-neutral: rgba(30, 30, 30, 0.18);
+        }
+        #lda-root.lda-skin-sketch .lda-panel,
+        #lda-root.lda-skin-sketch .lda-card {
+            background-color: var(--lda-bg);
+            background-image:
+                repeating-linear-gradient(135deg, rgba(0,0,0,0.02) 0 2px, transparent 2px 6px),
+                radial-gradient(circle at 20% 15%, rgba(0,0,0,0.035), transparent 45%);
+        }
+        #lda-root.lda-skin-sketch .lda-panel {
+            border-radius: 18px 12px 16px 14px;
+        }
+        #lda-root.lda-skin-sketch .lda-card {
+            border-radius: 12px 10px 14px 10px;
+            box-shadow: 3px 3px 0 rgba(20, 20, 20, 0.2);
+        }
+        #lda-root.lda-skin-sketch .lda-head {
+            background:
+                repeating-linear-gradient(-45deg, rgba(35,35,35,0.88) 0 4px, rgba(20,20,20,0.92) 4px 8px);
+            border-bottom: 2px solid rgba(30, 30, 30, 0.65);
+        }
+        #lda-root.lda-skin-sketch .lda-title {
+            color: #f2e4c7;
+            text-shadow: 1px 1px 0 rgba(0,0,0,0.35);
+        }
+        #lda-root.lda-skin-sketch .lda-tabs {
+            background: rgba(0,0,0,0.04);
+            border-bottom: 2px solid rgba(30, 30, 30, 0.25);
+        }
+        #lda-root.lda-skin-sketch .lda-tab {
+            color: #3a362f;
+        }
+        #lda-root.lda-skin-sketch .lda-tab.active {
+            border-bottom-style: solid;
+            border-bottom-width: 3px;
+            color: #d46b2c;
+        }
+        #lda-root.lda-skin-sketch .lda-act-btn,
+        #lda-root.lda-skin-sketch .lda-icon-btn,
+        #lda-root.lda-skin-sketch .lda-seg-item.active,
+        #lda-root.lda-skin-sketch .lda-auth-btn,
+        #lda-root.lda-skin-sketch .lda-sort-btn {
+            border: 2px solid rgba(30, 30, 30, 0.6);
+            background: rgba(252, 246, 236, 0.95);
+            box-shadow: 2px 2px 0 rgba(25, 25, 25, 0.25);
+        }
+        #lda-root.lda-skin-sketch:not(.lda-dark) .lda-auth-btn,
+        #lda-root.lda-skin-sketch:not(.lda-dark) .lda-sort-btn {
+            color: #2b261d !important;
+        }
+        #lda-root.lda-skin-sketch .lda-act-btn:hover,
+        #lda-root.lda-skin-sketch .lda-auth-btn:hover {
+            background: rgba(255, 255, 255, 0.98);
+        }
+        #lda-root.lda-skin-sketch .lda-progress {
+            background: repeating-linear-gradient(90deg, rgba(0,0,0,0.08) 0 3px, transparent 3px 6px);
+        }
+        #lda-root.lda-skin-sketch .lda-fill {
+            box-shadow: 1px 1px 0 rgba(20,20,20,0.2);
+        }
+        #lda-root.lda-skin-sketch .lda-ball.lda-ball-classic {
+            background: linear-gradient(135deg, #f2a04a 0%, #e07a3f 100%);
+            box-shadow: 0 6px 0 rgba(25, 25, 25, 0.3);
+            border: 2px solid rgba(30, 30, 30, 0.6);
+            border-radius: 16px 12px 18px 10px;
+        }
+        body.lda-skin-sketch .lda-header-btn {
+            border: 2px solid rgba(30, 30, 30, 0.55);
+            box-shadow: 2px 2px 0 rgba(25, 25, 25, 0.25);
+            background: rgba(252, 239, 220, 0.9);
+            color: #c25a23;
+        }
+        #lda-root.lda-skin-sketch .lda-switch .lda-slider {
+            background-color: rgba(30,30,30,0.15);
+            box-shadow: inset 0 0 0 2px rgba(30, 30, 30, 0.3);
+        }
+        #lda-root.lda-skin-sketch .lda-seg {
+            border: 2px dashed rgba(30, 30, 30, 0.25);
+            background: rgba(224, 122, 63, 0.08);
+        }
+        body.lda-skin-sketch #lda-sieve-panel {
+            border: 2px dashed rgba(30, 30, 30, 0.35);
+            box-shadow: 3px 3px 0 rgba(25, 25, 25, 0.2);
+            background-image: repeating-linear-gradient(135deg, rgba(0,0,0,0.03) 0 2px, transparent 2px 6px);
+        }
+
+        #lda-root.lda-skin-sketch.lda-dark {
+            --lda-bg: rgba(46, 42, 35, 0.98);
+            --lda-fg: #fbf6ec;
+            --lda-dim: #e6dccb;
+            --lda-border: 2px solid rgba(255, 255, 255, 0.28);
+            --lda-shadow: 6px 6px 0 rgba(0, 0, 0, 0.6);
+            --lda-accent: #f2a04a;
+            --lda-ball-ring: rgba(255, 255, 255, 0.25);
+            --lda-neutral: rgba(255, 255, 255, 0.15);
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-panel,
+        #lda-root.lda-skin-sketch.lda-dark .lda-card {
+            background-image:
+                radial-gradient(circle at 20% 15%, rgba(255,255,255,0.035), transparent 45%);
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-head {
+            background: rgba(22, 20, 18, 0.92);
+            border-bottom-color: rgba(255,255,255,0.22);
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-title {
+            color: #f6e1b9;
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-tab {
+            color: #f0e6d4;
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-tab.active {
+            color: #f2a04a;
+        }
+        body.lda-skin-sketch.lda-dark #lda-sieve-panel {
+            border-color: rgba(255, 255, 255, 0.35);
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-act-btn,
+        #lda-root.lda-skin-sketch.lda-dark .lda-icon-btn,
+        #lda-root.lda-skin-sketch.lda-dark .lda-seg-item.active,
+        #lda-root.lda-skin-sketch.lda-dark .lda-auth-btn,
+        #lda-root.lda-skin-sketch.lda-dark .lda-sort-btn {
+            border: 2px solid rgba(255, 255, 255, 0.28);
+            background: rgba(60, 55, 46, 0.95);
+            box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.55);
+            color: var(--lda-fg);
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-act-btn:hover,
+        #lda-root.lda-skin-sketch.lda-dark .lda-auth-btn:hover {
+            background: rgba(80, 72, 60, 0.95);
+        }
+        body.lda-skin-sketch.lda-dark .lda-header-btn {
+            border: 2px solid rgba(255, 255, 255, 0.28);
+            box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.55);
+            background: rgba(60, 55, 46, 0.95);
+            color: #f2a04a;
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-switch .lda-slider {
+            background-color: rgba(255, 255, 255, 0.12);
+            box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.25);
+        }
+        #lda-root.lda-skin-sketch.lda-dark .lda-seg {
+            border: 2px dashed rgba(255, 255, 255, 0.25);
+            background: rgba(242, 160, 74, 0.12);
+        }
+
+        /* 主题皮肤：像素 */
+        #lda-root.lda-skin-pixel {
+            --lda-font: "Press Start 2P", "MS Gothic", "SimSun", "Microsoft YaHei", monospace;
+            --lda-bg: #1c2f4f;
+            --lda-fg: #e8f1ff;
+            --lda-dim: #a7b8da;
+            --lda-border: 2px solid #0b152a;
+            --lda-shadow: 4px 4px 0 #0b152a;
+            --lda-accent: #2dd4bf;
+            --lda-ball-ring: rgba(11, 21, 42, 0.8);
+            --lda-neutral: rgba(255, 255, 255, 0.18);
+            --lda-rad: 0px;
+        }
+        #lda-root.lda-skin-pixel .lda-panel,
+        #lda-root.lda-skin-pixel .lda-card {
+            border-radius: 0;
+            background-color: var(--lda-bg);
+            background-image:
+                linear-gradient(0deg, rgba(255,255,255,0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+            background-size: 6px 6px;
+            backdrop-filter: none;
+            -webkit-backdrop-filter: none;
+        }
+        #lda-root.lda-skin-pixel .lda-head {
+            background: #3a6fb3;
+            border-bottom: 2px solid #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-title {
+            color: #eaf3ff;
+            text-shadow: 1px 1px 0 #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-tab {
+            letter-spacing: 0.4px;
+            text-shadow: 1px 1px 0 #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-tab.active {
+            color: #a7f3d0;
+            border-bottom-color: #a7f3d0;
+        }
+        #lda-root.lda-skin-pixel .lda-header-btn,
+        #lda-root.lda-skin-pixel .lda-act-btn,
+        #lda-root.lda-skin-pixel .lda-auth-btn,
+        #lda-root.lda-skin-pixel .lda-seg-item.active,
+        #lda-root.lda-skin-pixel .lda-sort-btn {
+            border-radius: 0;
+            border: 2px solid #0b152a;
+            background: #2b4e86;
+            box-shadow: 2px 2px 0 #0b152a;
+            text-shadow: 1px 1px 0 #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-icon-btn {
+            border-radius: 0;
+            border: 2px solid #0b152a;
+            background: #27406b;
+            box-shadow: 2px 2px 0 #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-card {
+            background-color: #182743;
+            border: 2px solid #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-stats-bar {
+            background: #141f36;
+            border: 2px solid #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-progress {
+            background: #0f1c33;
+            border: 2px solid #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-fill {
+            box-shadow: inset 0 0 0 2px #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-ball,
+        #lda-root.lda-skin-pixel .lda-ball.lda-ball-classic {
+            border-radius: 4px;
+            box-shadow: 3px 3px 0 #0b152a;
+        }
+        #lda-root.lda-skin-pixel .lda-switch .lda-slider,
+        #lda-root.lda-skin-pixel .lda-seg {
+            border-radius: 0;
+            border: 2px solid #0b152a;
+            background: #1b3157;
+        }
+        #lda-root.lda-skin-pixel img {
+            image-rendering: pixelated;
+        }
+        body.lda-skin-pixel .lda-header-btn {
+            border: 2px solid #0b152a;
+            box-shadow: 2px 2px 0 #0b152a;
+            border-radius: 0;
+            background: #3a6fb3;
+            color: #eaf3ff;
+        }
+        body.lda-skin-pixel #lda-sieve-panel {
+            border-radius: 0;
+            border-width: 2px;
+            border-color: #0b152a;
+            box-shadow: 3px 3px 0 #0b152a;
+            background-color: #1c2f4f;
+            background-image:
+                linear-gradient(0deg, rgba(255,255,255,0.05) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(255,255,255,0.05) 1px, transparent 1px);
+            background-size: 6px 6px;
+        }
+
+        #lda-root.lda-skin-pixel.lda-dark {
+            --lda-bg: #0f1b35;
+            --lda-fg: #f8fafc;
+            --lda-dim: #c0cbe3;
+            --lda-border: 2px solid #e2e8f0;
+            --lda-shadow: 4px 4px 0 rgba(0, 0, 0, 0.7);
+            --lda-accent: #67e8f9;
+            --lda-ball-ring: rgba(248, 250, 252, 0.6);
+            --lda-neutral: rgba(248, 250, 252, 0.18);
+        }
+        #lda-root.lda-skin-pixel.lda-dark .lda-head {
+            background: #244a82;
+        }
+        body.lda-skin-pixel.lda-dark #lda-sieve-panel {
+            border-color: rgba(226, 232, 240, 0.8);
+        }
+    `;
+
     // ========== 筛选工具模块 (SieveModule) ==========
     // 配置定义
     const SIEVE_CONFIG = {
@@ -3091,6 +3423,7 @@
             this.state = {
                 lang: Utils.get(CONFIG.KEYS.LANG, 'zh'),
                 theme: Utils.get(CONFIG.KEYS.THEME, 'auto'),
+                stylePreset: Utils.get(CONFIG.KEYS.STYLE_PRESET, 'sketch'),
                 height: Utils.get(CONFIG.KEYS.HEIGHT, 'auto'), // Default: Auto
                 expand: Utils.get(CONFIG.KEYS.EXPAND, false),  // Default: False
                 trustCache: Utils.get(CONFIG.KEYS.CACHE_TRUST, {}),
@@ -3151,6 +3484,7 @@
                 this.autoRefreshTimer = null;
             }
             GM_addStyle(Styles);
+            GM_addStyle(ThemeSkinStyles);
             this.renderLayout();
             const isHeaderMode = this.state.displayMode === 'header';
             if (!isHeaderMode) {
@@ -3160,6 +3494,7 @@
             this.bindGlobalEvents();
             this.startUserWatcher();
             this.applyTheme();
+            this.applySkin();
             this.applyHeight();
             this.applyOpacity();
             this.applyFontSize();
@@ -3416,7 +3751,7 @@
         }
 
         renderSettings() {
-            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode, sieveEnabled, fontSize, settingSubTab, showDailyRank } = this.state;
+            const { lang, height, expand, tabOrder, refreshInterval, opacity, gainAnim, useClassicIcon, iconSize, displayMode, sieveEnabled, fontSize, settingSubTab, showDailyRank, stylePreset } = this.state;
             const r = (val, cur) => val === cur ? 'active' : '';
             const opacityVal = Math.max(0.5, Math.min(1, Number(opacity) || 1));
             const opacityPercent = Math.round(opacityVal * 100);
@@ -3533,6 +3868,14 @@
                             <div class="lda-seg" id="grp-lang">
                                 <div class="lda-seg-item ${r('zh', lang)}" data-v="zh">中文</div>
                                 <div class="lda-seg-item ${r('en', lang)}" data-v="en">EN</div>
+                            </div>
+                        </div>
+                        <div class="lda-opt">
+                            <div class="lda-opt-label">${this.t('set_style')}</div>
+                            <div class="lda-seg" id="grp-style">
+                                <div class="lda-seg-item ${r('sketch', stylePreset)}" data-v="sketch">${this.t('style_sketch')}</div>
+                                <div class="lda-seg-item ${r('pixel', stylePreset)}" data-v="pixel">${this.t('style_pixel')}</div>
+                                <div class="lda-seg-item ${r('default', stylePreset)}" data-v="default">${this.t('style_default')}</div>
                             </div>
                         </div>
                         <div class="lda-opt">
@@ -3849,8 +4192,13 @@
         }
 
         bindGlobalEvents() {
-            Utils.el('#lda-btn-close').onclick = () => this.togglePanel(false);
-            Utils.el('#lda-btn-update').onclick = (e) => { e.stopPropagation(); this.checkUpdate({ isAuto: false, force: true }); };
+            const closeBtn = Utils.el('#lda-btn-close', this.dom.root);
+            if (closeBtn) closeBtn.onclick = () => this.togglePanel(false);
+
+            const updateBtn = Utils.el('#lda-btn-update', this.dom.root);
+            if (updateBtn) {
+                updateBtn.onclick = (e) => { e.stopPropagation(); this.checkUpdate({ isAuto: false, force: true }); };
+            }
 
             // 防止 window/document 级事件监听器重复绑定（init 可能被多次调用）
             if (!this._globalEventsBound) {
@@ -3895,6 +4243,13 @@
                     this.dom.root.remove();
                     this.init(wasOpen);
                     return;
+                }
+                const styleNode = e.target.closest('#grp-style .lda-seg-item');
+                if (styleNode && styleNode.dataset.v !== this.state.stylePreset) {
+                    this.state.stylePreset = styleNode.dataset.v;
+                    Utils.set(CONFIG.KEYS.STYLE_PRESET, this.state.stylePreset);
+                    this.applySkin();
+                    this.renderSettings();
                 }
                 const sizeNode = e.target.closest('#grp-size .lda-seg-item');
                 if (sizeNode) {
@@ -5844,6 +6199,22 @@
             let isDark = (theme === 'dark');
             if (theme === 'auto') isDark = window.matchMedia('(prefers-color-scheme: dark)').matches || document.documentElement.className.includes('dark');
             this.dom.root.classList.toggle('lda-dark', isDark);
+            if (document.body) {
+                document.body.classList.toggle('lda-dark', isDark);
+            }
+        }
+
+        applySkin() {
+            const { stylePreset } = this.state;
+            const root = this.dom.root;
+            if (root) {
+                root.classList.toggle('lda-skin-sketch', stylePreset === 'sketch');
+                root.classList.toggle('lda-skin-pixel', stylePreset === 'pixel');
+            }
+            if (document.body) {
+                document.body.classList.toggle('lda-skin-sketch', stylePreset === 'sketch');
+                document.body.classList.toggle('lda-skin-pixel', stylePreset === 'pixel');
+            }
         }
 
         updateThemeIcon() {
