@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Linux.do Assistant
 // @namespace    https://linux.do/
-// @version      6.5.1
+// @version      6.5.2
 // @description  Linux.do 仪表盘 - 信任级别进度 & 积分查看 & CDK社区分数 & 主页筛选工具 (支持全等级)
 // @author       Sauterne@Linux.do
 // @match        https://linux.do/*
@@ -23,6 +23,14 @@
 // ==/UserScript==
 
 /**
+ * 更新日志 v6.5.2
+ * - 修复主页筛选工具「加载更多」在新版 Discourse（2026.x / Ember 6.10）上失效：
+ *   新版 window.Discourse 本身即 owner（.lookup 直接可用），发现页 TopicList 在 route.currentModel.list
+ *   （controller.model 为 null）。SieveModule 新增 getTopicList() 据此获取，兼容旧版；已在 linux.do 实测确认。
+ * - 「加载更多」改为每次点击只加载一页（30 条），一次点击=一次请求，由用户决定是否继续，避免连续翻页触发频率限制。
+ * - 新增行级 MutationObserver：新帖子行插入时在浏览器绘制前同步筛选，消除「加载时闪一下又变回」。
+ * - 到底判断改用模型 canLoadMore / more_topics_url；新增滚动兜底（不依赖内部接口）。
+ *
  * 更新日志 v6.5.1
  * - 默认关闭「显示每日排名」，降低 Leaderboard 接口请求频率
  * - 开启「显示每日排名」前弹出提示，提醒可能导致频繁请求
@@ -1885,7 +1893,7 @@
     const SIEVE_CONFIG = {
         // 允许自动滚动的路径白名单
         AUTO_SCROLL_PATHS: ['/', '/latest', '/top', '/new'],
-        TARGET_COUNT: 20,
+        TARGET_COUNT: 30,
         // 等级配置
         LEVELS: [
             { key: 'public', label: '公开(Lv0)', check: (cls) => !/lv\d+/i.test(cls) },
@@ -2207,11 +2215,16 @@
             
             // 加载状态
             this.isLoadingMore = false;
-            
+
             // 内存优化：防抖和变化检测
             this._urlWatcherTimer = null;    // MutationObserver 防抖计时器
             this._lastRowCount = 0;          // 上次帖子数量（变化检测用）
             this._filterDirty = true;        // 筛选条件是否变化（强制重新筛选）
+
+            // 行级筛选观察器：新帖子行插入时在绘制前同步筛选，消除“闪一下”
+            this.rowObserver = null;
+            this._rowObserverTarget = null;  // 当前观察的 .topic-list-body 节点
+            this._suppressRowObserver = false; // 自身修改 DOM 时暂停观察器，避免自触发
         }
 
         // 初始化
@@ -2258,7 +2271,14 @@
                 this.observer.disconnect();
                 this.observer = null;
             }
-            
+
+            // 清理行级观察器
+            if (this.rowObserver) {
+                this.rowObserver.disconnect();
+                this.rowObserver = null;
+                this._rowObserverTarget = null;
+            }
+
             if (this.panel) {
                 this.panel.remove();
                 this.panel = null;
@@ -2574,19 +2594,11 @@
             
             if (action === 'toggle-level') {
                 const allKeys = LEVELS.map(l => l.key);
-                if (this.activeLevels.length === allKeys.length) {
-                    this.activeLevels = [];
-                } else {
-                    this.activeLevels = [...allKeys];
-                }
+                this.activeLevels = [...allKeys];
                 Utils.set(CONFIG.KEYS.SIEVE_LEVELS, this.activeLevels);
             } else if (action === 'toggle-cat') {
                 const allIds = CATEGORIES.map(c => c.id);
-                if (this.activeCats.length === allIds.length) {
-                    this.activeCats = [];
-                } else {
-                    this.activeCats = [...allIds];
-                }
+                this.activeCats = [...allIds];
                 Utils.set(CONFIG.KEYS.SIEVE_CATS, this.activeCats);
             } else if (action === 'reset-tag') {
                 this.tagStates = {};
@@ -2747,12 +2759,16 @@
             const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
             if (!rows.length) return 0;
 
+            // 本方法会修改 spacer/加载行的 DOM，暂停行级观察器避免自触发
+            this._suppressRowObserver = true;
+
             const { LEVELS, CATEGORIES, STATE } = SIEVE_CONFIG;
             let visibleCount = 0;
             let hiddenHeight = 0; // 记录被隐藏行的总高度
 
-            const isAllLevels = this.activeLevels.length === LEVELS.length;
-            const isAllCats = this.activeCats.length === CATEGORIES.length;
+            const hasLevelMarkers = Array.from(rows).some(row => /\blv\d+\b/i.test(row.className));
+            const isAllLevels = !hasLevelMarkers || !this.activeLevels.length || this.activeLevels.length === LEVELS.length;
+            const isAllCats = !this.activeCats.length || this.activeCats.length === CATEGORIES.length;
 
             // 收集包含和排除的标签
             const includeTags = [];
@@ -2802,6 +2818,10 @@
                             let rawTag = cls.substring(4);
                             try { return decodeURIComponent(rawTag); } catch (e) { return rawTag; }
                         });
+                    row.querySelectorAll('.discourse-tag').forEach(tagEl => {
+                        const tagText = tagEl.textContent?.trim();
+                        if (tagText && !rowTags.includes(tagText)) rowTags.push(tagText);
+                    });
 
                     const hasNoTags = rowTags.length === 0;
 
@@ -2842,48 +2862,38 @@
             // 更新 spacer 高度以补偿被隐藏的内容
             this.updateSpacer(hiddenHeight);
 
+            // 恢复观察器（下一个微任务里 spacer 变更记录到达时已可安全忽略）
+            this._suppressRowObserver = false;
+
             return visibleCount;
         }
 
         // 更新/创建 spacer 元素来补偿隐藏内容的高度
-        updateSpacer(additionalHeight) {
+        updateSpacer() {
             const listBody = document.querySelector('.topic-list-body');
             if (!listBody) return;
 
             let spacer = document.getElementById('lda-sieve-spacer');
             let loadMoreRow = document.getElementById('lda-sieve-loadmore');
-            
-            // 计算当前所有隐藏行的总高度
             const rows = listBody.querySelectorAll('tr.topic-list-item');
             let totalHiddenHeight = 0;
-            
-            // 使用一个固定的行高估算值（因为隐藏后无法测量）
-            const estimatedRowHeight = 55; // 估算每行高度
+
             rows.forEach(row => {
                 if (row.style.display === 'none') {
-                    // 如果有缓存的高度使用缓存，否则用估算值
-                    const cachedHeight = row.dataset.ldaHeight;
-                    if (cachedHeight) {
-                        totalHiddenHeight += parseInt(cachedHeight, 10);
-                    } else {
-                        totalHiddenHeight += estimatedRowHeight;
-                    }
+                    totalHiddenHeight += parseInt(row.dataset.ldaHeight || '55', 10);
                 } else {
-                    // 缓存显示行的高度，供下次隐藏时使用
-                    row.dataset.ldaHeight = row.offsetHeight;
+                    row.dataset.ldaHeight = row.offsetHeight || 55;
                 }
             });
 
-            // 检查是否需要显示加载更多按钮（有筛选条件且未到底部）
             const { LEVELS, CATEGORIES, TAGS } = SIEVE_CONFIG;
-            const isAllLevels = this.activeLevels.length === LEVELS.length;
-            const isAllCats = this.activeCats.length === CATEGORIES.length;
+            const hasLevelMarkers = Array.from(rows).some(row => /\blv\d+\b/i.test(row.className));
+            const isAllLevels = !hasLevelMarkers || !this.activeLevels.length || this.activeLevels.length === LEVELS.length;
+            const isAllCats = !this.activeCats.length || this.activeCats.length === CATEGORIES.length;
             const isAllTagsNeutral = TAGS.every(t => !this.tagStates[t]);
             const hasFilter = !(isAllLevels && isAllCats && isAllTagsNeutral);
-            const isAtBottom = this.isFooterReached();
 
-            // 创建或更新"加载更多"按钮行
-            if (hasFilter && !isAtBottom) {
+            if (hasFilter && !this.isFooterReached()) {
                 if (!loadMoreRow) {
                     loadMoreRow = document.createElement('tr');
                     loadMoreRow.id = 'lda-sieve-loadmore';
@@ -2907,14 +2917,6 @@
                             "></span>
                         </td>
                     `;
-                    // 插入到 spacer 之前，或者列表末尾
-                    if (spacer) {
-                        listBody.insertBefore(loadMoreRow, spacer);
-                    } else {
-                        listBody.appendChild(loadMoreRow);
-                    }
-                    
-                    // 绑定点击事件
                     const btn = loadMoreRow.querySelector('#lda-sieve-loadmore-btn');
                     btn.addEventListener('click', () => this.handleLoadMore());
                     btn.addEventListener('mouseenter', () => {
@@ -2926,107 +2928,249 @@
                         btn.style.color = 'var(--tertiary, #3b82f6)';
                     });
                 }
-            } else if (loadMoreRow) {
-                // 全选状态或已到底部时移除按钮
-                loadMoreRow.remove();
+            } else {
+                loadMoreRow?.remove();
+                loadMoreRow = null;
             }
 
-            // 更新 spacer
             if (totalHiddenHeight > 0) {
                 if (!spacer) {
-                    // 创建 spacer 元素
                     spacer = document.createElement('tr');
                     spacer.id = 'lda-sieve-spacer';
                     spacer.innerHTML = '<td colspan="99" style="padding:0;border:none;"></td>';
                     spacer.style.cssText = 'display:table-row;pointer-events:none;visibility:hidden;';
                     listBody.appendChild(spacer);
                 }
-                // 设置 spacer 高度
                 spacer.querySelector('td').style.height = totalHiddenHeight + 'px';
-            } else if (spacer) {
-                // 没有隐藏内容时移除 spacer
-                spacer.remove();
+            } else {
+                spacer?.remove();
+                spacer = null;
             }
+
+            const anchor = spacer || null;
+            if (loadMoreRow && loadMoreRow.nextSibling !== anchor) {
+                listBody.insertBefore(loadMoreRow, anchor);
+            }
+        }
+        // 获取当前发现页的 TopicList 模型实例
+        // 现代 Discourse（glimmer 版）：controller:discovery/list 的 model 是 { list, category, tag, ... } 包装对象，
+        // 真正带 loadMore()/canLoadMore 的 TopicList 在 model.list 上。
+        getTopicList() {
+            // Discourse 2026.x：window.Discourse 本身就是 owner（ApplicationInstance），直接带 .lookup()
+            // 旧版：容器在 window.Discourse.__container__ / _applicationInstance。两者都兼容。
+            const d = window.Discourse;
+            const owner = (d && typeof d.lookup === 'function')
+                ? d
+                : (d?.__container__ || d?._applicationInstance || null);
+            const lookup = owner?.lookup?.bind(owner);
+            if (!lookup) return null;
+
+            const candidates = [];
+            // model 可能是 { list, filterType } 包装对象，也可能本身就是 TopicList
+            const pushModel = (m) => { if (m) candidates.push(m.list, m); };
+            const pushCtrl = (c) => { if (c) { pushModel(c.model); candidates.push(c.topicList); } };
+
+            // 当前路由名
+            let routeName = null;
+            try {
+                const router = lookup('router:main') || lookup('service:router');
+                routeName = router?.currentRouteName;
+            } catch (_) { }
+
+            // 1) 首选路由的 currentModel —— linux.do 实测：controller.model 为 null，
+            //    真正的 TopicList 在 route.currentModel.list（route.currentModel = { list, filterType }）
+            const routeKeys = [];
+            if (routeName) routeKeys.push('route:' + routeName);
+            routeKeys.push(
+                'route:discovery.latest', 'route:discovery.new', 'route:discovery.top',
+                'route:discovery.hot', 'route:discovery.unread',
+                'route:discovery.category', 'route:discovery.categoryNone'
+            );
+            for (const key of routeKeys) {
+                try { pushModel(lookup(key)?.currentModel); } catch (_) { }
+            }
+
+            // 2) 兜底：controller.model（部分版本/主题仍走这里）
+            for (const key of ['controller:discovery/list', 'controller:discovery.list']) {
+                try { pushCtrl(lookup(key)); } catch (_) { }
+            }
+            if (routeName) { try { pushCtrl(lookup('controller:' + routeName)); } catch (_) { } }
+
+            for (const target of candidates) {
+                if (target && typeof target.loadMore === 'function') return target;
+            }
+            return null;
+        }
+
+        // 是否存在有效筛选（等级/分类/标签任一非全选）
+        hasActiveFilter() {
+            const { LEVELS, CATEGORIES, TAGS } = SIEVE_CONFIG;
+            const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
+            const hasLevelMarkers = Array.from(rows).some(row => /\blv\d+\b/i.test(row.className));
+            const isAllLevels = !hasLevelMarkers || !this.activeLevels.length || this.activeLevels.length === LEVELS.length;
+            const isAllCats = !this.activeCats.length || this.activeCats.length === CATEGORIES.length;
+            const isAllTagsNeutral = TAGS.every(t => !this.tagStates[t]);
+            return !(isAllLevels && isAllCats && isAllTagsNeutral);
+        }
+
+        // 触发一次“加载下一页”。优先直接驱动 TopicList 模型，失败再点击原生按钮兜底。
+        async loadMoreWithDiscourse() {
+            const list = this.getTopicList();
+            if (list && typeof list.loadMore === 'function') {
+                try {
+                    // canLoadMore 为 false 表示已无更多内容
+                    if (list.canLoadMore === false) return false;
+                    await list.loadMore();
+                    return true;
+                } catch (_) { /* 落到 DOM 兜底 */ }
+            }
+
+            // 兜底1：站点主题若渲染了可见的“加载更多”按钮则点击它
+            const visibleBtn = Array.from(document.querySelectorAll('button, .btn'))
+                .find(el => el.id !== 'lda-sieve-loadmore-btn'
+                    && el.offsetParent !== null
+                    && /加载更多|load more/i.test(el.textContent || ''));
+            if (visibleBtn) {
+                visibleBtn.click();
+                return true;
+            }
+
+            // 兜底2：滚到底触发原生无限滚动的 sentinel（不依赖任何内部接口，6.5.1 做法）
+            return await this.triggerNativeByScroll();
+        }
+
+        // 通过滚动让原生 .load-more-sentinel 进入视口，触发 Discourse 原生续载
+        async triggerNativeByScroll() {
+            const sentinel = document.querySelector('.load-more-sentinel')
+                || document.querySelector('footer.topic-list-bottom')
+                || document.getElementById('topic-list-bottom');
+            if (!sentinel) return false;
+
+            // 临时把 spacer 收成 0，让 sentinel 能真正进入视口
+            const spacerTd = document.getElementById('lda-sieve-spacer')?.querySelector('td');
+            const savedHeight = spacerTd?.style.height;
+            if (spacerTd) spacerTd.style.height = '0';
+
+            const scrollPos = window.scrollY;
+            try {
+                sentinel.scrollIntoView({ block: 'end' });
+            } catch (_) {
+                window.scrollTo(0, document.body.scrollHeight);
+            }
+
+            // 等待加载 spinner 结束（或 5s 超时）
+            await new Promise(resolve => {
+                const start = Date.now();
+                const check = () => {
+                    if (!this.isLoading() || Date.now() - start > 5000) { resolve(); return; }
+                    setTimeout(check, 200);
+                };
+                setTimeout(check, 500);
+            });
+
+            // 恢复滚动位置与 spacer 高度（后续 filterTopics 会重新精确计算）
+            window.scrollTo(0, scrollPos);
+            if (spacerTd && savedHeight != null) spacerTd.style.height = savedHeight;
+            return true;
         }
 
         // 手动加载更多帖子
         async handleLoadMore() {
             if (this.isLoadingMore) return;
             this.isLoadingMore = true;
-            
+
             const btn = document.getElementById('lda-sieve-loadmore-btn');
             const hint = document.getElementById('lda-sieve-loadmore-hint');
-            
-            // 记录加载前的可见帖子数量
-            const beforeCount = this.filterTopics();
-            
-            // 更新按钮状态
-            if (btn) {
-                btn.textContent = '加载中...';
-                btn.style.opacity = '0.6';
-                btn.style.pointerEvents = 'none';
+
+            try {
+                const beforeCount = this.filterTopics();
+                let afterCount = beforeCount;
+                let reachedEnd = false;
+                let changed = false;
+
+                if (btn) {
+                    btn.textContent = '加载中...';
+                    btn.style.opacity = '0.6';
+                    btn.style.pointerEvents = 'none';
+                }
+                if (hint) hint.textContent = '';
+
+                // 每次点击只加载「一页」（Discourse 默认 30 条）：一次点击 = 一次请求，
+                // 由用户自行决定是否继续点，避免连续翻页疯狂请求触发站点风控/封号。
+                if (this.isFooterReached()) {
+                    reachedEnd = true;
+                } else {
+                    const beforeSignature = this.getTopicListSignature();
+                    const used = await this.loadMoreWithDiscourse();
+                    if (used) {
+                        changed = await this.waitForTopicListChange(beforeSignature, 6000);
+                        reachedEnd = this.isFooterReached();
+                        this._filterDirty = true;
+                        afterCount = this.filterTopics();
+                    }
+                }
+
+                this._filterDirty = true;
+                afterCount = this.filterTopics();
+                const diff = afterCount - beforeCount;
+
+                if (hint) {
+                    if (reachedEnd || this.isFooterReached()) {
+                        hint.textContent = '✓ 已加载全部内容';
+                        hint.style.color = '#22c55e';
+                    } else if (diff > 0) {
+                        hint.textContent = `✓ 新增 ${diff} 条符合条件的帖子`;
+                        hint.style.color = '#22c55e';
+                    } else if (changed) {
+                        hint.textContent = '本页无符合项，可再点「加载更多」继续找';
+                        hint.style.color = '#f59e0b';
+                    } else {
+                        hint.textContent = '未检测到新内容，请稍后再试';
+                        hint.style.color = '#f59e0b';
+                    }
+
+                    setTimeout(() => {
+                        if (hint) hint.textContent = '';
+                    }, 5000);
+                }
+            } finally {
+                if (btn) {
+                    btn.textContent = '加载更多';
+                    btn.style.opacity = '1';
+                    btn.style.pointerEvents = '';
+                }
+                this.isLoadingMore = false;
             }
-            if (hint) hint.textContent = '';
-            
-            // 临时移除 spacer 以触发加载
-            const spacer = document.getElementById('lda-sieve-spacer');
-            const spacerHeight = spacer?.querySelector('td')?.style.height;
-            if (spacer) spacer.querySelector('td').style.height = '0';
-            
-            // 滚动到底部触发 Discourse 加载
-            const scrollPos = window.scrollY;
-            window.scrollTo(0, document.body.scrollHeight);
-            
-            // 等待加载完成
-            await new Promise(resolve => {
+        }
+        getTopicListSignature() {
+            return Array.from(document.querySelectorAll('.topic-list-body tr.topic-list-item'))
+                .map(row => row.dataset.topicId || row.querySelector('a.title, a.raw-topic-link')?.href || row.textContent.trim().slice(0, 80))
+                .join('|');
+        }
+
+        waitForTopicListChange(beforeSignature, timeout = 8000) {
+            return new Promise(resolve => {
                 const startTime = Date.now();
+                let sawLoading = false;
                 const check = () => {
-                    if (!this.isLoading() || Date.now() - startTime > 5000) {
-                        resolve();
+                    const changed = this.getTopicListSignature() !== beforeSignature;
+                    if (changed) {
+                        resolve(true);
+                        return;
+                    }
+                    if (this.isLoading()) sawLoading = true;
+                    if (this.isFooterReached() || Date.now() - startTime > timeout) {
+                        resolve(false);
+                        return;
+                    }
+                    if (sawLoading && !this.isLoading() && Date.now() - startTime > 800) {
+                        resolve(false);
                         return;
                     }
                     setTimeout(check, 200);
                 };
-                setTimeout(check, 500);
+                setTimeout(check, 300);
             });
-            
-            // 滚动回原位
-            window.scrollTo(0, scrollPos);
-            
-            // 重置变化检测计数器，确保下次定时循环能正确检测
-            this._filterDirty = true;
-            
-            // 重新筛选并计算新增数量
-            const afterCount = this.filterTopics();
-            const diff = afterCount - beforeCount;
-            
-            // 恢复按钮状态
-            if (btn) {
-                btn.textContent = '加载更多';
-                btn.style.opacity = '1';
-                btn.style.pointerEvents = '';
-            }
-            
-            // 显示加载结果提示
-            if (hint) {
-                if (this.isFooterReached()) {
-                    hint.textContent = '✓ 已加载全部内容';
-                    hint.style.color = '#22c55e';
-                } else if (diff > 0) {
-                    hint.textContent = `✓ 新增 ${diff} 条符合条件的帖子`;
-                    hint.style.color = '#22c55e';
-                } else {
-                    hint.textContent = '✓ 已加载，暂无新增符合条件的帖子';
-                    hint.style.color = '#f59e0b';
-                }
-                
-                // 5秒后清除提示
-                setTimeout(() => {
-                    if (hint) hint.textContent = '';
-                }, 5000);
-            }
-            
-            this.isLoadingMore = false;
         }
 
         // 移除 spacer 和加载按钮（销毁时调用）
@@ -3042,6 +3186,49 @@
             rows.forEach(row => delete row.dataset.ldaHeight);
         }
 
+        clearFilterEffects() {
+            document.querySelectorAll('.topic-list-body tr.topic-list-item').forEach(row => {
+                row.style.display = '';
+                row.style.visibility = '';
+                delete row.dataset.ldaTempShown;
+                delete row.dataset.ldaHeight;
+            });
+            this.removeSpacer();
+            this._lastRowCount = 0;
+            this._filterDirty = true;
+        }
+        // 确保行级观察器已挂在当前 .topic-list-body 上
+        // 新帖子行插入时，在浏览器绘制前同步筛掉不匹配行，彻底消除“加载时闪一下”
+        ensureRowObserver() {
+            const body = document.querySelector('.topic-list-body');
+            if (!body) return;
+            // 已挂在同一节点上则无需重挂（列表整体重渲染会换掉 body，需要重挂）
+            if (this.rowObserver && this._rowObserverTarget === body) return;
+
+            if (this.rowObserver) this.rowObserver.disconnect();
+            this._rowObserverTarget = body;
+            this.rowObserver = new MutationObserver((mutations) => {
+                if (this.isDestroyed || this._suppressRowObserver || !this.isHomePage()) return;
+
+                let addedRow = false;
+                for (const m of mutations) {
+                    for (const node of m.addedNodes) {
+                        if (node.nodeType === 1 && node.classList && node.classList.contains('topic-list-item')) {
+                            addedRow = true;
+                            break;
+                        }
+                    }
+                    if (addedRow) break;
+                }
+                // 只有新增了真实帖子行、且当前有筛选时才处理；否则放手让原生列表自然工作
+                if (!addedRow || !this.hasActiveFilter()) return;
+
+                this._filterDirty = true;
+                this.filterTopics(); // 同步执行：MutationObserver 回调在绘制前运行，故不会闪
+            });
+            this.rowObserver.observe(body, { childList: true });
+        }
+
         // 启动筛选循环
         startFilterLoop() {
             if (this.checkInterval) clearInterval(this.checkInterval);
@@ -3050,13 +3237,16 @@
 
         // 筛选循环（只执行筛选，不自动滚动加载）
         forceLoadLoop() {
-            if (this.isDestroyed) return;
+            if (this.isDestroyed || this.isLoadingMore) return;
             
             // 检查是否在首页
             if (!this.isHomePage()) {
                 this.updateStatus('');
                 return;
             }
+
+            // 确保行级观察器挂在最新的列表容器上（列表重渲染会换掉容器）
+            this.ensureRowObserver();
 
             // 内存优化：变化检测，只在帖子数量变化或筛选条件变化时执行完整筛选
             const rows = document.querySelectorAll('.topic-list-body tr.topic-list-item');
@@ -3075,8 +3265,9 @@
             const currentCount = this.filterTopics();
             const { LEVELS, CATEGORIES, TAGS } = SIEVE_CONFIG;
             
-            const isAllLevels = this.activeLevels.length === LEVELS.length;
-            const isAllCats = this.activeCats.length === CATEGORIES.length;
+            const hasLevelMarkers = Array.from(rows).some(row => /\blv\d+\b/i.test(row.className));
+            const isAllLevels = !hasLevelMarkers || !this.activeLevels.length || this.activeLevels.length === LEVELS.length;
+            const isAllCats = !this.activeCats.length || this.activeCats.length === CATEGORIES.length;
             const isAllTagsNeutral = TAGS.every(t => !this.tagStates[t]);
 
             // 如果所有筛选都是全选状态，隐藏状态
@@ -3097,11 +3288,17 @@
 
         // 判断是否到达底部
         isFooterReached() {
+            // 优先用模型状态判断：more_topics_url 为空即无更多内容（权威、与语言无关）
+            const list = this.getTopicList();
+            if (list) {
+                if (typeof list.canLoadMore === 'boolean') return !list.canLoadMore;
+                if ('more_topics_url' in list) return !list.more_topics_url;
+            }
+            // 兜底：扫描底部提示文案
+            const endTextRe = /没有更多|已到底|no more|end of list|that's all/i;
             const footerMessage = document.querySelector('.footer-message');
-            if (footerMessage && footerMessage.offsetParent !== null) return true;
             const bottom = document.getElementById('topic-list-bottom');
-            if (bottom && bottom.innerText.includes('没有更多')) return true;
-            return false;
+            return [footerMessage, bottom].some(el => endTextRe.test((el?.textContent || '').trim()));
         }
 
         // 判断是否正在加载
@@ -3167,7 +3364,8 @@
                 this._filterDirty = true;
                 this.filterTopics();
             } else {
-                // 非首页时隐藏面板
+                // 非首页时恢复筛选器改过的列表，避免污染分类页等 Discourse 原生列表
+                this.clearFilterEffects();
                 if (this.panel) {
                     this.panel.style.display = 'none';
                 }
